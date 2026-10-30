@@ -7,6 +7,7 @@ mod data;
 mod dialog;
 mod egg;
 mod eval;
+mod grammar;
 mod lexicon;
 mod me;
 mod memory;
@@ -64,6 +65,8 @@ enum Cmd {
     UnderstandEval,
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
     ComposeEval,
+    /// the questions Darma's grammar makes of a verb and a noun
+    Ask2 { verb: String, noun: String },
     /// Darma's own answer to lines (understanding, decision, a form filled), with how it chose
     Compose { lines: Vec<String> },
     /// how Darma reads lines: their act and emotion
@@ -105,6 +108,19 @@ fn main() {
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
+        Cmd::Ask2 { verb, noun } => {
+            let g = grammar::Grammar::learn("data/ud_short.json").expect("run prepare-data first");
+            println!("{} patterns (each seen in {} sentences or more)", g.patterns.len(), grammar::MIN_SEEN);
+            for (s, p, n) in g.ask_about(&verb, &noun).iter().take(12) {
+                println!("  {s:<40} {p} ({n})");
+            }
+            let verbs: std::collections::HashSet<String> = serde_json::from_str::<std::collections::HashMap<String, u32>>(&std::fs::read_to_string("data/verbs.json").unwrap()).unwrap().into_iter().filter(|x| x.1 >= 2).map(|x| x.0).collect();
+            let o = g.openings("data/ud_short.json", "data/raw/dailydialog/train_marked.json", &verbs).unwrap();
+            println!("{} question beginnings (each said {} times or more)", o.begins.len(), grammar::MIN_SEEN);
+            for (s, b, n, with) in g.ask_with(&o, &verb, &noun, "you", 0).iter().take(10) {
+                println!("  {s:<40} \"{b} ...\" weighs {n}{}", if *with { "" } else { " (never with this verb)" });
+            }
+        }
         Cmd::Compose { lines } => {
             let at = lexicon::Atoms::new(cli.dim, cli.seed);
             let (u, _) = understand::strike_or_load(&at).expect("download DailyDialog first");

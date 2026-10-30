@@ -170,6 +170,8 @@ pub struct Talk<'a> {
     last: Option<Vec<String>>,
     /// what Darma knows of itself
     pub me: crate::me::Me<'a>,
+    /// its understanding of what a line does and feels, and its grammar (for sentences of its own)
+    own: Option<(crate::understand::Understanding<'a>, crate::compose::Composer)>,
 }
 
 use crate::dialog::TALK_AT;
@@ -200,7 +202,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh) };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")) };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -385,8 +387,17 @@ impl<'a> Talk<'a> {
             self.learn(&s);
             use std::io::Write;
             let _ = writeln!(self.log, "{}", s.join(" "));
-            // it answers the whole of what was said as people did, and keeps what it heard of you; if nothing people
-            // said fits, it says it keeps it, and what it recalls of it
+            // it asks of what you did in a sentence of its own (its grammar); if it can make none, it answers as people
+            // did; if nothing people said fits, it says it keeps it, and what it recalls of it
+            if let Some((u, c)) = self.own.as_ref() {
+                let me = &self.me;
+                let world = &self.core;
+                let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
+                let test = |a: &str| me.names_a_stranger(a, &known).or_else(|| me.contradicts(&words_of(a)));
+                if let Some((q, why)) = c.own_question(u, w, &test) {
+                    return Reply { said: q, why: format!("{why}; I keep of you: {}", s.join(" ")), kind: "own", recall: String::new(), ask: String::new() };
+                }
+            }
             match self.talk(w) {
                 Some(mut t) => {
                     t.why = format!("{}; I keep of you: {}", t.why, s.join(" "));

@@ -63,6 +63,8 @@ pub struct Composer {
     forms2: HashMap<(usize, usize), Vec<Form>>,
     /// the words people marked as verbs in UD (at least twice)
     verbs: std::collections::HashSet<String>,
+    /// Darma's grammar and the question beginnings people use (its own sentences are made with these)
+    grammar: Option<(crate::grammar::Grammar, crate::grammar::Openings)>,
     /// short answers to each feeling, most common first (emotion index > 0)
     to_feeling: Vec<Vec<(String, u32)>>,
     /// short answers to each act with no topic, most common first
@@ -134,7 +136,11 @@ impl Composer {
             .map(|x| x.0)
             .filter(|v| !copulas.contains(v))
             .collect();
-        let mut c = Composer { forms2: HashMap::new(), verbs, forms: HashMap::new(), to_feeling: vec![Vec::new(); 7], to_act: vec![Vec::new(); 4], act_after: vec![vec![0; 4]; 4], df, turns, things, seen };
+        let grammar = crate::grammar::Grammar::learn("data/ud_short.json").and_then(|g| {
+            let o = g.openings("data/ud_short.json", path, &verbs)?;
+            Some((g, o))
+        });
+        let mut c = Composer { grammar, forms2: HashMap::new(), verbs, forms: HashMap::new(), to_feeling: vec![Vec::new(); 7], to_act: vec![Vec::new(); 4], act_after: vec![vec![0; 4]; 4], df, turns, things, seen };
         let mut feel: Vec<HashMap<String, u32>> = vec![HashMap::new(); 7];
         let mut plain: Vec<HashMap<String, u32>> = vec![HashMap::new(); 4];
         let mut forms: HashMap<(usize, usize), HashMap<String, (Vec<String>, Vec<String>, u32, std::collections::HashSet<String>)>> = HashMap::new();
@@ -242,6 +248,25 @@ impl Composer {
         if na * nb == 0.0 { 0.0 } else { shared / (na * nb) }
     }
 
+    /// Darma's own question of what the speaker says they did (and to what), made by its grammar; None if the line
+    /// holds no such clause or the grammar makes nothing of it
+    pub fn own_question(&self, u: &Understanding, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
+        let r = u.read(line);
+        let a = ACTS.iter().position(|x| *x == r.act).unwrap();
+        let (vi, pi) = self.clause(line)?;
+        let pi = pi?;
+        let (g, o) = self.grammar.as_ref()?;
+        if !line[..vi].iter().any(|x| x == "i" || x == "we") {
+            return None;
+        }
+        for (q, b, n, with) in g.ask_with(o, &line[vi], &line[pi], "you", a).iter().take(10) {
+            if test(q).is_none() {
+                return Some((q.clone(), format!("read: {} ({}); what you did: \"{}\" to \"{}\"; my own question, in my grammar: a beginning people use after a {} (\"{b} ...\", weighs {n}{}), the verb bent to fit", r.act, r.emotion, line[vi], line[pi], r.act, if *with { "" } else { ", never with this verb" })));
+            }
+        }
+        None
+    }
+
     /// what Darma answers, how it decided (act and emotion read, topic, how it chose), every candidate it let go
     /// and why; `test` lets go of what goes against Darma's character
     pub fn answer(&self, u: &Understanding, d: &crate::dialog::Dialog, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
@@ -251,15 +276,27 @@ impl Composer {
         let after = &self.act_after[a];
         let answer_act = ACTS[(0..4).max_by_key(|&i| after[i]).unwrap()];
         let head = format!("read: {} ({}), people answer it by {}", r.act, r.emotion, answer_act);
-        // a feeling: answered as people answer that feeling
-        if e > 0 {
+        // a feeling (not happiness: people's commonest answer to it is a thank-you, a stock that misfires): answered
+        // as people answer that feeling
+        if e > 0 && EMOTIONS[e] != "happiness" {
             if let Some((s, n)) = self.to_feeling[e].iter().find(|(s, _)| test(s).is_none()) {
                 return Some((s.clone(), format!("{head}; to {} people most often say this ({n} times)", r.emotion)));
             }
         }
-        // a clause (what the line did, and to what): the two-place form whose line resonates most in meaning, filled
-        // with this line's verb and object
-        if let Some((vi, pi)) = self.clause(line) {
+        // a clause (what the line did, and to what), said by the speaker of themselves: Darma asks of it in a sentence
+        // of its own, made by its grammar (a beginning people use after a line of this act, the verb bent to fit, the
+        // object with its article)
+        if let (Some((vi, Some(pi))), Some((g, o))) = (self.clause(line), self.grammar.as_ref()) {
+            if line[..vi].iter().any(|x| x == "i" || x == "we") {
+                for (q, b, n, with) in g.ask_with(o, &line[vi], &line[pi], "you", a).iter().take(10) {
+                    if test(q).is_none() {
+                        return Some((q.clone(), format!("{head}; what you did: \"{}\" to \"{}\"; my own question: a beginning people use after a {} (\"{b} ...\", weighs {n}{}), the verb bent to fit", line[vi], line[pi], r.act, if *with { "" } else { ", never with this verb" })));
+                    }
+                }
+            }
+        }
+        // (the two-place forms seen once are not used: they carry their first conversation's leftovers)
+        if let (Some((vi, pi)), false) = (self.clause(line), true) {
             let rest: Vec<String> = line.iter().enumerate().filter(|(k, _)| *k != vi && Some(*k) != pi).map(|(_, x)| x.clone()).collect();
             let here = d.meaning_state(&rest);
             let vshape = shape(&line[vi]);
@@ -321,6 +358,20 @@ pub fn eval(dim: usize, seed: u64) {
         if common == 0.0 { 0.0 } else { let p = common / a.len() as f32; let r = common / b.len() as f32; 2.0 * p * r / (p + r) }
     };
     let (mut n, mut f, mut copies, mut with_topic, mut feeling, mut two) = (0usize, 0f32, 0usize, 0usize, 0usize, 0usize);
+    // fluency: the share of the word pairs of Darma's sentences that people's turns hold (DailyDialog train)
+    let mut pairs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let tr: Vec<Marked> = serde_json::from_str(&std::fs::read_to_string("data/raw/dailydialog/train_marked.json").unwrap()).unwrap();
+        for d in &tr {
+            for u in &d.dialog {
+                let w = tokens(u);
+                for p in w.windows(2) {
+                    pairs.insert(p.join(" "));
+                }
+            }
+        }
+    }
+    let (mut seen_pairs, mut all_pairs, mut own) = (0usize, 0usize, 0usize);
     let mut shown = 0;
     for d in &test {
         for k in 0..d.dialog.len().saturating_sub(1) {
@@ -335,6 +386,11 @@ pub fn eval(dim: usize, seed: u64) {
             copies += c.seen.contains(&aw.join(" ")) as usize;
             with_topic += why.contains("topic \"") as usize;
             two += why.contains("what it did") as usize;
+            own += why.contains("my own question") as usize;
+            for p in aw.windows(2) {
+                all_pairs += 1;
+                seen_pairs += pairs.contains(&p.join(" ")) as usize;
+            }
             feeling += (why.contains("people most often say this") && !why.contains("no topic")) as usize;
             if shown < 8 && n % 120 == 1 {
                 shown += 1;
@@ -342,5 +398,6 @@ pub fn eval(dim: usize, seed: u64) {
             }
         }
     }
-    println!("\n{n} test turns answered: shares words with the person's real answer F1 {:.3}; {:.1}% of the answers are word for word a training turn; {:.1}% filled a two-place form, {:.1}% a one-place form; {:.1}% answered a feeling", f / n as f32, 100.0 * copies as f32 / n as f32, 100.0 * two as f32 / n as f32, 100.0 * with_topic as f32 / n as f32, 100.0 * feeling as f32 / n as f32);
+    println!("
+{n} test turns answered: F1 with the person's real answer {:.3}; {:.1}% word for word a training turn; {:.1}% Darma's own grammar question, {:.1}% a two-place form, {:.1}% a one-place form, {:.1}% a feeling; fluency: {:.1}% of its word pairs are in people's turns", f / n as f32, 100.0 * copies as f32 / n as f32, 100.0 * own as f32 / n as f32, 100.0 * two as f32 / n as f32, 100.0 * with_topic as f32 / n as f32, 100.0 * feeling as f32 / n as f32, 100.0 * seen_pairs as f32 / all_pairs.max(1) as f32);
 }

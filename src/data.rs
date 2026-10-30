@@ -235,6 +235,39 @@ pub fn prepare(dir: &Path) -> std::io::Result<()> {
         }
     }
     put("verbs.json", serde_json::to_string(&verbs).unwrap())?;
+    // the short sentences people parsed (3 to 10 words, marks counted): each word's form, lemma, kind and features,
+    // for Darma's grammar
+    let mut short: Vec<Vec<serde_json::Value>> = Vec::new();
+    for name in ["ud/en_ewt-ud-train.conllu", "ud/en_ewt-ud-dev.conllu"] {
+        for block in fs::read_to_string(raw.join(name)).unwrap().split("\n\n") {
+            let toks: Vec<serde_json::Value> = block
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .filter_map(|l| {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    (f.len() >= 8 && !f[0].contains('-') && !f[0].contains('.'))
+                        .then(|| serde_json::json!({"form": f[1].to_lowercase(), "lemma": f[2].to_lowercase(), "upos": f[3], "feats": f[5]}))
+                })
+                .collect();
+            if (3..=10).contains(&toks.len()) {
+                short.push(toks);
+            }
+        }
+    }
+    put("ud_short.json", serde_json::to_string(&short).unwrap())?;
+    // how every word bends: (form, lemma, features) with how often, over all the parsed sentences
+    let mut bends: BTreeMap<(String, String, String), u32> = BTreeMap::new();
+    for name in ["ud/en_ewt-ud-train.conllu", "ud/en_ewt-ud-dev.conllu"] {
+        for l in fs::read_to_string(raw.join(name)).unwrap().lines() {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() >= 8 && !f[0].contains('-') && !f[0].contains('.') && f[1].chars().all(|c| c.is_alphabetic()) {
+                *bends.entry((f[1].to_lowercase(), f[2].to_lowercase(), f[5].to_string())).or_default() += 1;
+            }
+        }
+    }
+    let bends: Vec<(String, String, String, u32)> = bends.into_iter().map(|((a, b, c), n)| (a, b, c, n)).collect();
+    put("bends.json", serde_json::to_string(&bends).unwrap())?;
+    println!("short parsed sentences for the grammar: {}", short.len());
     println!("copulas marked in UD: {:?}", cop.iter().filter(|x| *x.1 >= 20).collect::<Vec<_>>());
     println!("role-marked training sentences (UD EWT train + dev): {}, {} words", tg.len(), tg.iter().map(|t| t.words.len()).sum::<usize>());
     put("train.json", serde_json::to_string_pretty(&train).unwrap())?;
