@@ -210,3 +210,80 @@ pub fn chat(dim: usize, seed: u64, beta: f32, memory: &str, fresh: bool) {
         }
     }
 }
+
+/// the scale test (`darma qa-sentences`): Darma is told every UD training sentence whole (about 14,000 sentences,
+/// 200,000 words), and asked about the marked clauses in their own words: "guerrillas killed a member" becomes "who
+/// killed a member" (answer: guerrillas) and "guerrillas killed a what" (answer: member). An answer counts as right
+/// when it holds the marked word. The thresholds are learned on the even-numbered clauses with their sentences taken
+/// back out of the state (untold); the odd-numbered clauses are asked told. Untold: the test sentences' clauses.
+pub fn sentences(dim: usize, seed: u64) {
+    let d = data();
+    let at = Atoms::new(dim, seed);
+    let mut core = Core::new(&at, None, 0.0);
+    let t0 = Instant::now();
+    for s in &d.tagged {
+        core.tell(&s.words);
+    }
+    println!("told {} sentences ({} words) in {:.1} s, D {dim}", d.tagged.len(), d.tagged.iter().map(|s| s.words.len()).sum::<usize>(), t0.elapsed().as_secs_f64());
+    // a clause's two questions in its sentence's own words: (question, the marked answer word)
+    let qs = |c: &crate::memory::Clause| -> Option<(Vec<String>, [(Vec<String>, String); 2])> {
+        let w = words_of(&c.sentence);
+        let g = c.gold();
+        let a = w.iter().position(|x| *x == g[0])?;
+        let p = (a..w.len()).find(|&i| w[i] == g[2])?;
+        if p - a > 6 {
+            return None;
+        }
+        let seg = w[a..=p].to_vec();
+        let mut q1 = seg.clone();
+        q1[0] = "who".into();
+        let mut q2 = seg.clone();
+        let last = q2.len() - 1;
+        q2[last] = "what".into();
+        Some((w, [(q1, g[0].clone()), (q2, g[2].clone())]))
+    };
+    // thresholds: untold questions (each even clause's sentence out of the state while it is asked)
+    let (mut peaks, mut zs) = (Vec::new(), Vec::new());
+    for c in d.train.iter().step_by(2) {
+        let Some((w, both)) = qs(c) else { continue };
+        core.forget(&w);
+        for (q, _) in &both {
+            let ms = core.measure(q, &core.candidates_for(q));
+            if !ms.is_empty() {
+                peaks.push(Core::peak(&ms));
+                zs.push(ms[0].2);
+            }
+        }
+        core.tell(&w);
+    }
+    let q95 = |mut v: Vec<f32>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[((v.len() as f32 - 1.0) * 0.95) as usize]
+    };
+    core.threshold = q95(peaks);
+    core.fid_threshold = q95(zs);
+    let (mut right, mut wrong, mut dunno, mut n) = (0, 0, 0, 0);
+    let t1 = Instant::now();
+    for c in d.train.iter().skip(1).step_by(2) {
+        let Some((_, both)) = qs(c) else { continue };
+        for (q, a) in &both {
+            n += 1;
+            match core.answer(q, &core.candidates_for(q)).0 {
+                Some(x) if x.split(' ').any(|p| p == a) => right += 1,
+                Some(_) => wrong += 1,
+                None => dunno += 1,
+            }
+        }
+    }
+    let us = t1.elapsed().as_micros() as f64 / n.max(1) as f64;
+    let (mut said, mut nu) = (0, 0);
+    for c in &d.test {
+        let Some((_, both)) = qs(c) else { continue };
+        for (q, _) in &both {
+            nu += 1;
+            said += core.answer(q, &core.candidates_for(q)).0.is_some() as usize;
+        }
+    }
+    println!("told questions (n={n}): right {:.1}%, wrong {:.1}%, en ymmärrä {:.1}%; untold (test sentences, n={nu}) answered {:.1}%; thresholds {:.3} / {:.2} sd; {us:.0} us a question",
+        pct(right, n), pct(wrong, n), pct(dunno, n), pct(said, nu), core.threshold, core.fid_threshold);
+}

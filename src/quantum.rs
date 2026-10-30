@@ -137,7 +137,17 @@ impl<'a> Core<'a> {
     /// the registers to measure in: one per word of the question. An answer was told together with every one of
     /// them, so it must show in each; a word never told means memory cannot answer (None)
     fn collapse(&self, words: &[String]) -> Option<Vec<(&HVec, usize)>> {
-        words.iter().filter(|w| !HOLES.contains(&w.as_str())).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| (&r.0, r.2))).collect()
+        let all: Vec<(&HVec, usize)> = words.iter().filter(|w| !HOLES.contains(&w.as_str())).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| (&r.0, r.2))).collect::<Option<_>>()?;
+        // a register can tell a full match (fidelity 1) from noise only if its noise on one run, sqrt(m / 2D), is at
+        // most a third of it (three deviations); a register holding too much is not measured in. If none can, the
+        // one holding least is.
+        let limit = 2.0 * self.at.d as f32 / 9.0;
+        let sharp: Vec<(&HVec, usize)> = all.iter().filter(|r| r.1 as f32 <= limit).cloned().collect();
+        if sharp.is_empty() {
+            all.into_iter().min_by_key(|r| r.1).map(|r| vec![r])
+        } else {
+            Some(sharp)
+        }
     }
 
     /// asking: the hole (who / what) is filled by each candidate in turn, and memory is measured against the runs of
@@ -322,4 +332,86 @@ pub fn questions(g: &[String; 3]) -> [(Vec<String>, String); 2] {
 
 pub fn words_of(s: &str) -> Vec<String> {
     tokens(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(s: &str) -> Vec<String> {
+        s.split(' ').map(String::from).collect()
+    }
+
+    fn core(at: &Atoms) -> Core<'_> {
+        let mut c = Core::new(at, None, 0.0);
+        for s in ["the dog chased the cat", "the cat ate the fish", "rex bit the man", "rex is a dog"] {
+            c.tell(&w(s));
+        }
+        c.threshold = 0.5;
+        c.fid_threshold = 3.0;
+        c
+    }
+
+    #[test]
+    fn a_told_thing_is_answered() {
+        let at = Atoms::new(1024, 1);
+        let c = core(&at);
+        let q = w("who chased the cat");
+        assert_eq!(c.answer(&q, &c.candidates_for(&q)).0.as_deref(), Some("the dog"));
+        let q = w("the cat ate what");
+        assert_eq!(c.answer(&q, &c.candidates_for(&q)).0.as_deref(), Some("the fish"));
+    }
+
+    #[test]
+    fn the_wrong_way_round_is_not() {
+        let at = Atoms::new(1024, 1);
+        let c = core(&at);
+        for q in ["who chased the dog", "who ate the cat", "the fish ate what"] {
+            let q = w(q);
+            assert_eq!(c.answer(&q, &c.candidates_for(&q)).0, None, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn order_makes_a_different_state() {
+        let at = Atoms::new(1024, 1);
+        let c = Core::new(&at, None, 0.0);
+        let a = c.state(&w("dog bit man"), None);
+        let b = c.state(&w("man bit dog"), None);
+        let s = a.sim(&b);
+        // the whole states share their three single words (3 of 6 runs: about 0.5); the runs that say how the words
+        // stand to each other share nothing
+        let r = c.run(&w("dog bit man")).sim(&c.run(&w("man bit dog")));
+        let r2 = c.run(&w("dog bit")).sim(&c.run(&w("man bit")));
+        println!("'dog bit man' vs 'man bit dog': whole states {s:.3}, the three-word runs {r:.3}, 'dog bit' vs 'man bit' {r2:.3}");
+        assert!(s < 0.6 && r.abs() < 0.1 && r2.abs() < 0.1);
+    }
+
+    #[test]
+    fn yes_no_needs_the_whole_statement() {
+        let at = Atoms::new(1024, 1);
+        let c = core(&at);
+        assert!(c.verify(&w("the dog chased the cat")).unwrap().1 > 3.0);
+        assert!(c.verify(&w("the cat chased the dog")).unwrap().1 < 3.0);
+        assert!(c.verify(&w("the bird ate the worm")).is_none());
+    }
+
+    #[test]
+    fn one_step_of_reasoning() {
+        let at = Atoms::new(1024, 1);
+        let c = core(&at);
+        let cop = vec!["is".to_string()];
+        let (a, why) = c.answer_reasoned(&w("rex chased what"), &cop);
+        assert_eq!(a.as_deref(), Some("the cat"));
+        assert_eq!(why, vec!["rex is a dog".to_string()]);
+    }
+
+    #[test]
+    fn forgetting_takes_it_back() {
+        let at = Atoms::new(1024, 1);
+        let mut c = core(&at);
+        c.forget(&w("the cat ate the fish"));
+        let q = w("the cat ate what");
+        assert_eq!(c.answer(&q, &c.candidates_for(&q)).0, None);
+    }
 }
