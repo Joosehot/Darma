@@ -323,3 +323,31 @@ Kun lyhyiden yleismuottien suosimista vähennettiin, kopiointi nousi. Syy on se,
 F1 on tähän asti paras oma lause, mutta lauseet ovat sekavia. Kerran nähty muotti on yksittäinen lause, josta on vaihdettu kaksi sanaa, ja muu alkuperäinen sisältö jää mukaan. Esimerkiksi "I bought a new car" saa vastauksen "That's funny my bought always loses ten car a day".
 
 **Johtopäätös:** omaa lausetta ei voi koota ihmisten yksittäisistä lauseista. Se pitää koota rakenteista, joita on nähty monessa lauseessa: lauseen osien järjestyksestä ja siitä, mitkä sanat sopivat mihinkin paikkaan. Sisällön pitää tulla siitä, mitä Darma tietää. Tämä on kieliopin oppimista, ja se on seuraavan vaiheen ydin.
+
+## Oma kielioppi: Darman ensimmäiset omat lauseet
+
+`src/grammar.rs` oppii UD:sta ja DailyDialogista seuraavat asiat:
+- **Taivutus:** perusmuoto ja muotopiirteet antavat sanamuodon, kaikista UD:n lauseista (data/bends.json).
+- **Kysymysten alut,** eli pikkusanat ennen kysymyksen ensimmäistä verbiä, kuten "why do you", "what are you" ja "when will you". Ne opitaan DailyDialogin kysymyksistä. Pikkusanoiksi lasketaan sanat, joiden yleisin sanaluokka UD:ssa on pieni, eli pronomini, apuverbi tai artikkeli.
+- **Alun paino:** kuinka usein alku on sanottu juuri tämän verbin kanssa ja kuinka usein sen jälkeen, kun edellinen repliikki oli samaa tekoa. Jälkimmäinen tulee DailyDialogin tekomerkinnöistä.
+- **Kohde:** ottaako alku kohteen. "What are you reading?" ei ota, koska "what" on jo kohde.
+- **Artikkeli,** jonka ihmiset yleensä panevat juuri tämän sanan eteen.
+
+Kun puhuja kertoo tehneensä jotain johonkin, Darma kysyy siitä omalla lauseellaan:
+
+```
+I bought a new car           → When will you buy car?
+I read a good book yesterday → What are you reading?
+I love my cat                → Can you love a cat?
+```
+
+Mikään näistä ei ole datassa valmiina. Verbi taipuu itse, esimerkiksi "bought" muuttuu muotoon "buy".
+
+Lyhyessä testissä, 150 keskustelua, 17 % vastauksista oli Darman omia kielioppikysymyksiä. Sujuvuus, eli kuinka suuri osa vastausten sanapareista esiintyy ihmisten repliikeissä, oli 77–89 %. F1 oikeaan vastaukseen oli 0,075, eikä se mittaa omia lauseita hyvin.
+
+Keskustelussa Darma käyttää omaa lausettaan ensin. Ihmisten repliikkiin se turvautuu vain, jos oma lause ei synny, ja sivulla omat lauseet näkyvät eri värillä.
+
+**Rajat:**
+- Merkitys on vielä karkea: menneeseen kertomukseen Darma kysyy tulevasta, kuten "When will you buy car?".
+- Kohde tunnistuu vain, jos sana esiintyy UD:ssa pääsanana. Siksi "I like football" ei vielä tuota omaa lausetta.
+- Omia lauseita syntyy vain kysymyksiksi siitä, mitä puhuja teki. Muut repliikit menevät edelleen keskustelumuistiin.
