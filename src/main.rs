@@ -2,6 +2,7 @@
 //! vector.rs phase vectors; data.rs the downloaded sets; lexicon.rs atoms; memory.rs lightning training; egg.rs the
 //! swim and the egg's three layers; eval.rs the measures and the baseline.
 
+mod compose;
 mod data;
 mod dialog;
 mod egg;
@@ -58,6 +59,8 @@ enum Cmd {
     DialogEval,
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
+    /// Darma's own answers (understanding, decision, a form filled) against people's real answers
+    ComposeEval,
     /// how Darma reads lines: their act and emotion
     Read { lines: Vec<String> },
     /// senses as measurements: which sense does memory hold in this place?
@@ -94,6 +97,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Read { lines } => {
             let at = lexicon::Atoms::new(cli.dim, cli.seed);
             let u = understand::learn_and_choose(&at).expect("download DailyDialog first");

@@ -268,3 +268,28 @@ Dimensiolla 1 024 teon tarkkuus oli 63,9 % ja F1 0,575, tunteiden F1 0,320. Tunt
 Ensimmäisen kokeilun painot valitsin katsomalla testiosan tuloksia. Se oli vuoto, ja se korjattiin: luvut yllä on mitattu validointiosalla valituilla painoilla.
 
 `cargo run --release -- --dim 4096 read "I'm so sad, my dog died"` näyttää, miten Darma lukee lauseen.
+
+## Oma lause: vaiheet 2 ja 3, versio 1
+
+`src/compose.rs`, komento `compose-eval`. Darma lukee repliikistä teon, tunteen ja aiheen. Sen jälkeen se toimii näin:
+- **Tunteeseen** se vastaa niin kuin ihmiset siihen tunteeseen vastasivat.
+- **Aiheeseen** se vastaa ihmisten muotilla, jossa on paikka aiheelle, esimerkiksi "What kind of ___ do you like?". Muotti valitaan saman teon ja tunteen repliikeistä sen mukaan, mikä alkuperäinen tilanne on lähimpänä. Aukkoon tulee käyttäjän aihe.
+- **Muuten** se vastaa niin kuin tähän tekoon yleisimmin vastataan.
+
+Opittu päätös, eli millä teolla ihmiset vastaavat, on järkevä: kysymykseen vastataan kertomalla ja pyyntöön lupaamalla.
+
+| DailyDialog test | Hakuversio | Muotit, versio 1 | Aihe asiasanaksi ja muotit yleisiksi |
+|---|---|---|---|
+| F1 oikeaan vastaukseen, satunnainen 0,078 | 0,191 | 0,089 | 0,054 |
+| Vastaus on sanasta sanaan harjoitusrepliikki | 100 % | 23,5 % | 49,5 % |
+
+Esimerkkejä:
+- "This is our rock-bottom price…" → "What kind of rock do you want"
+- "It takes a long time to learn Chinese writing." → "Thank you"
+
+**Miksi tulos on heikko:**
+1. **Aihe on väärä.** Aiheeksi pitäisi valita substantiivilausekkeen pääsana: ilmauksessa "rock-bottom price" se on "price", ei "rock". Darmalla ei ole vielä lausekerakennetta. UD:ssa pääsanat on merkitty, joten Darma voi oppia ne sieltä.
+2. **Darmalla ei ole omaa sisältöä.** Ihmisten vastauksissa on vastaajan omaa elämää: kokemuksia, mielipiteitä ja päätöksiä. Darma voi vain reagoida tunteeseen, kysyä aiheesta tai kertoa muistamansa. Siksi sen vastaukset jäävät väkisinkin kauas ihmisten vastauksista.
+3. **Mittari ei sovi tähän.** Päällekkäisyys oikean vastauksen kanssa palkitsee kopiointia. Se ei mittaa, onko vastaus sopiva. Oikea mittari vaatisi ihmisen arvion, esimerkiksi omistajan.
+
+Kun lyhyiden yleismuottien suosimista vähennettiin, kopiointi nousi. Syy on se, että vastaukset kuten "Thank you", "Ok" ja "Yes" ovat itse yleisiä repliikkejä.
