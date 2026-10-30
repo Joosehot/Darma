@@ -73,7 +73,9 @@ impl Dialog {
 
     /// the kept turn most like what was said, and how alike (cosine): (turn, likeness)
     pub fn nearest(&self, words: &[String], skip: &[usize]) -> Option<(usize, f32)> {
-        let q = runs(words);
+        // only the runs people's conversations hold: a word never met there (a name, "Darma") says nothing of which
+        // turn this is like, so it does not weigh in
+        let q: Vec<String> = runs(words).into_iter().filter(|r| self.df.contains_key(r)).collect();
         let qn = q.iter().map(|r| self.idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6);
         let mut score: HashMap<u32, f32> = HashMap::new();
         for r in &q {
@@ -91,7 +93,9 @@ impl Dialog {
             .into_iter()
             .map(|(i, s)| (i as usize, s / (qn * self.norm[i as usize])))
             .filter(|(i, _)| self.turns[*i].2.is_some() && !skip.contains(i))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(b.0.cmp(&a.0)))
+            // of turns alike as much, the one with least besides (its whole text shortest: "Hello." before a phone
+            // number read out)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(self.turns[b.0].1.len().cmp(&self.turns[a.0].1.len())).then(b.0.cmp(&a.0)))
     }
 
     /// Darma's answer: what people answered to the turn most like this one; (answer, the turn it matched, likeness).
