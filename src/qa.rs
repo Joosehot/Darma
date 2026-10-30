@@ -166,10 +166,11 @@ pub struct Talk<'a> {
     asked: Vec<Vec<String>>,
     /// people's conversations: what they answered to what (None when DailyDialog is not downloaded)
     dialog: Option<crate::dialog::Dialog>,
+    /// what Darma said last (the conversation so far, for the next match)
+    last: Option<Vec<String>>,
 }
 
-/// how alike a kept turn must be to what was said for Darma to answer as people did (a cosine; set by hand)
-pub const TALK_AT: f32 = 0.3;
+use crate::dialog::TALK_AT;
 
 /// one reply: what Darma says, on what it stood, what it recalls of it, and what it asks back
 pub struct Reply {
@@ -197,7 +198,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json") };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json"), last: None };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -307,11 +308,19 @@ impl<'a> Talk<'a> {
 
     /// what people answered to the turn most like this one, if one is alike enough
     fn talk(&mut self, w: &[String]) -> Option<Reply> {
-        let (ans, matched, s) = self.dialog.as_mut()?.reply(w)?;
+        let last = self.last.clone();
+        let (ans, matched, s) = self.dialog.as_mut()?.reply(w, last.as_deref())?;
         (s >= TALK_AT).then(|| Reply { said: ans, why: format!("people answered this to: \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
     }
 
     pub fn line(&mut self, line: &str) -> Reply {
+        let rep = self.line_inner(line);
+        let said = if rep.ask.is_empty() { rep.said.clone() } else { rep.ask.clone() };
+        self.last = Some(words_of(&said));
+        rep
+    }
+
+    fn line_inner(&mut self, line: &str) -> Reply {
         let w = words_of(line);
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
         let r = |said: &str, why: String, kind| Reply { said: said.to_string(), why, kind, recall: String::new(), ask: String::new() };

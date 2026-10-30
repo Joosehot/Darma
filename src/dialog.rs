@@ -11,10 +11,17 @@ use crate::lexicon::tokens;
 use std::collections::HashMap;
 
 pub const RUN: usize = 3;
+/// how alike a kept turn must be to what was said for Darma to answer as people did (a cosine; set by hand)
+pub const TALK_AT: f32 = 0.3;
+/// how much the conversation so far weighs: likeness of the turn before a kept turn to what Darma said last (set by
+/// hand)
+pub const CONTEXT: f32 = 0.5;
 
 pub struct Dialog {
     /// every kept turn: its words, its text, and the turn that answered it (if any)
     turns: Vec<(Vec<String>, String, Option<usize>)>,
+    /// the turn before each kept turn in its dialogue
+    prev: Vec<Option<usize>>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
@@ -46,11 +53,13 @@ impl Dialog {
     pub fn load(path: &str) -> Option<Dialog> {
         let dialogs: Vec<Vec<String>> = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
         let mut turns = Vec::new();
+        let mut prev = Vec::new();
         for d in &dialogs {
             let start = turns.len();
             for (k, u) in d.iter().enumerate() {
                 let next = (k + 1 < d.len()).then(|| start + k + 1);
                 turns.push((tokens(u), u.clone(), next));
+                prev.push((k > 0).then(|| start + k - 1));
             }
         }
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
@@ -64,19 +73,33 @@ impl Dialog {
         let n = turns.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
         let norm = turns.iter().map(|(w, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, index, df, norm, recent: Vec::new() })
+        Some(Dialog { turns, prev, index, df, norm, recent: Vec::new() })
     }
 
     fn idf(&self, r: &str) -> f32 {
         (self.turns.len() as f32 / *self.df.get(r).unwrap_or(&1) as f32).ln()
     }
 
-    /// the kept turn most like what was said, and how alike (cosine): (turn, likeness)
-    pub fn nearest(&self, words: &[String], skip: &[usize]) -> Option<(usize, f32)> {
+    /// how alike a sentence's runs (known ones, with their norm) are to kept turn i (cosine)
+    fn cos_to(&self, q: &[String], qn: f32, i: usize) -> f32 {
+        let tr = runs(&self.turns[i].0);
+        q.iter().filter(|r| tr.binary_search(r).is_ok()).map(|r| self.idf(r).powi(2)).sum::<f32>() / (qn * self.norm[i])
+    }
+
+    fn known_runs(&self, words: &[String]) -> (Vec<String>, f32) {
         // only the runs people's conversations hold: a word never met there (a name, "Darma") says nothing of which
         // turn this is like, so it does not weigh in
         let q: Vec<String> = runs(words).into_iter().filter(|r| self.df.contains_key(r)).collect();
         let qn = q.iter().map(|r| self.idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6);
+        (q, qn)
+    }
+
+    /// the kept turn most like what was said: (turn, likeness to what was said). Two things beyond likeness:
+    ///   the topic: the rarest known word of what was said; a turn holding it is looked for first, and taken if it is
+    ///              alike enough (TALK_AT), so "what do you think about dogs" stays with dogs;
+    ///   the conversation: a turn whose own turn before is like what Darma said last gains CONTEXT times that likeness.
+    pub fn nearest(&self, words: &[String], context: Option<&[String]>, skip: &[usize]) -> Option<(usize, f32)> {
+        let (q, qn) = self.known_runs(words);
         let mut score: HashMap<u32, f32> = HashMap::new();
         for r in &q {
             let Some(ids) = self.index.get(r) else { continue };
@@ -89,20 +112,47 @@ impl Dialog {
                 *score.entry(i).or_default() += w;
             }
         }
-        score
+        let mut cands: Vec<(usize, f32)> = score
             .into_iter()
             .map(|(i, s)| (i as usize, s / (qn * self.norm[i as usize])))
             .filter(|(i, _)| self.turns[*i].2.is_some() && !skip.contains(i))
-            // of turns alike as much, the one with least besides (its whole text shortest: "Hello." before a phone
-            // number read out)
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(self.turns[b.0].1.len().cmp(&self.turns[a.0].1.len())).then(b.0.cmp(&a.0)))
+            .collect();
+        cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let topic: Option<&String> = q.iter().filter(|r| !r.contains(' ')).max_by(|a, b| self.idf(a).partial_cmp(&self.idf(b)).unwrap());
+        // the turns holding the topic are taken from all candidates (a long frame like "what do you think about"
+        // would push them out of the best few hundred)
+        let topical: Vec<(usize, f32)> = match topic {
+            Some(tw) => cands.iter().filter(|(i, _)| self.turns[*i].0.contains(tw)).take(300).cloned().collect(),
+            None => Vec::new(),
+        };
+        cands.truncate(300);
+        let ctx = context.map(|c| self.known_runs(c));
+        let total = |&(i, s): &(usize, f32)| -> f32 {
+            let c = match (&ctx, self.prev[i]) {
+                (Some((cq, cn)), Some(p)) => CONTEXT * self.cos_to(cq, *cn, p),
+                _ => 0.0,
+            };
+            s + c
+        };
+        // of turns alike as much, the one with least besides (its whole text shortest: "Hello." before a phone
+        // number read out)
+        let pick = |set: Vec<&(usize, f32)>| -> Option<(usize, f32)> {
+            set.into_iter()
+                .map(|x| (x.0, x.1, total(x)))
+                .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap().then(self.turns[b.0].1.len().cmp(&self.turns[a.0].1.len())).then(b.0.cmp(&a.0)))
+                .map(|x| (x.0, x.1))
+        };
+        if let Some(b) = pick(topical.iter().collect()).filter(|b| b.1 >= TALK_AT) {
+            return Some(b);
+        }
+        pick(cands.iter().collect())
     }
 
     /// Darma's answer: what people answered to the turn most like this one; (answer, the turn it matched, likeness).
     /// The same answer is not given twice in a row.
-    pub fn reply(&mut self, words: &[String]) -> Option<(String, String, f32)> {
+    pub fn reply(&mut self, words: &[String], context: Option<&[String]>) -> Option<(String, String, f32)> {
         let recent = self.recent.clone();
-        let (i, s) = self.nearest(words, &recent)?;
+        let (i, s) = self.nearest(words, context, &recent)?;
         let next = self.turns[i].2?;
         self.recent.push(i);
         if self.recent.len() > 8 {
@@ -120,6 +170,13 @@ impl Dialog {
 /// compared with the person's real answer by the share of their words in common (F1), against the same for an answer
 /// drawn at random from the kept turns (the line to beat).
 pub fn eval(path_train: &str, path_test: &str) {
+    for use_context in [false, true] {
+        println!("== {}", if use_context { "with the turn before as context" } else { "each turn alone" });
+        eval_once(path_train, path_test, use_context);
+    }
+}
+
+fn eval_once(path_train: &str, path_test: &str, use_context: bool) {
     let Some(mut d) = Dialog::load(path_train) else { return println!("{path_train}: download DailyDialog first") };
     let test: Vec<Vec<String>> = serde_json::from_str(&std::fs::read_to_string(path_test).unwrap()).unwrap();
     let f1 = |a: &[String], b: &[String]| -> f32 {
@@ -139,9 +196,10 @@ pub fn eval(path_train: &str, path_test: &str) {
     let mut shown = 0;
     let mut k = 7usize;
     for dlg in &test {
-        for pair in dlg.windows(2) {
+        for (j, pair) in dlg.windows(2).enumerate() {
             let (said, real) = (tokens(&pair[0]), tokens(&pair[1]));
-            let Some((ans, matched, s)) = d.reply(&said) else { continue };
+            let before = (j > 0).then(|| tokens(&dlg[j - 1]));
+            let Some((ans, matched, s)) = d.reply(&said, if use_context { before.as_deref() } else { None }) else { continue };
             d.recent.clear();
             n += 1;
             f += f1(&tokens(&ans), &real);
@@ -155,7 +213,7 @@ pub fn eval(path_train: &str, path_test: &str) {
                 nf += f1(&tokens(&ans), &real);
                 nfr += f1(rnd, &real);
             }
-            if shown < 8 && n % 300 == 1 {
+            if shown < 3 && n % 1000 == 1 {
                 shown += 1;
                 println!("  said: {}\n  matched: {matched}  ({s:.2})\n  Darma: {ans}\n  person: {}\n", tidy(&pair[0]), tidy(&pair[1]));
             }
