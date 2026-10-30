@@ -253,20 +253,7 @@ impl Memory {
             m.membrane = quantile(chance, 1.0 - q);
         }
         // the thresholds, each a low quantile over the known clauses, each clause left out of its own memory
-        let mut comp = Vec::new();
-        let mut marg = Vec::new();
-        for (i, (s, g)) in m.structures.iter().enumerate() {
-            let others = m.structures.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| &x.0);
-            comp.push(others.map(|o| s.sim(o)).fold(f32::MIN, f32::max));
-            let words: Vec<String> = tokens(&clauses[i].sentence);
-            let (spoke, mg) = m.read_back(at, s, g, &words, Some(i));
-            if spoke && mg < f32::MAX {
-                marg.push(mg);
-            }
-        }
-        let _ = comp;
-
-        m.fertile = quantile(marg, q);
+        m.learn_fertile(at, clauses, q);
         m
     }
 
@@ -282,6 +269,20 @@ impl Memory {
             }
         }
         c
+    }
+
+    /// fertilisation's threshold: the low quantile q of the margins real training clauses get, each with its own
+    /// pairs left out of memory (set again whenever memory grows)
+    pub fn learn_fertile(&mut self, at: &Atoms, clauses: &[Clause], q: f32) {
+        let mut marg = Vec::new();
+        for (i, (s, g)) in self.structures.iter().enumerate() {
+            let words: Vec<String> = tokens(&clauses[i].sentence);
+            let (spoke, mg) = self.read_back(at, s, g, &words, Some(i));
+            if spoke && mg < f32::MAX {
+                marg.push(mg);
+            }
+        }
+        self.fertile = quantile(marg, q);
     }
 
     /// the plain neighbourhood of position i (SYNTAX_WINDOW words each side, each at its side and distance)

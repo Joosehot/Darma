@@ -143,3 +143,21 @@ Kun muisti on nähnyt parin, ristiriitatesti toimii. Kun pari on uusi, merkitysv
 **3. Mittarissa on pieni virhe.** Osa käännetyistä klausuuleista ei ole järjettömiä, esimerkiksi "money mean gifts" ja "case makes hubris". Valtaosa on kuitenkin järjettömiä, kuten "massacre condemn people", "talks demanded clerics" ja "slogans chanted crowds". Virhe on pieni verrattuna kalvon ja hedelmöityksen ongelmiin.
 
 **Johtopäätös:** munasolu tarvitsee laajan muistin siitä, kuka tekee mitä kenelle. Ihmisten merkitsemiä pareja on vain noin 14 000 lauseesta, mikä on liian vähän. Lähin keino on, että Darma lukee itse merkitsemätöntä tekstiä, kuten WikiTextiä, ja painaa muistiin ne klausuulit, joista se on varma. Darma oppisi siis lukemalla. Silloin uusien parien kattavuus voisi nousta harjoitusdatan tasolle, jolla hedelmöitys jo toimii, 84 %:iin.
+
+## Lukemalla oppiminen: kokeiltu
+
+Darma lukee merkitsemätöntä WikiTextiä lause kerrallaan. Kun sen vahvin luenta voittaa toiseksi parhaan opitulla marginaalilla ja läpäisee kalvon, se painaa luennan parit muistiin. Marginaali opitaan UD-harjoituslauseista, ja tarkkuustavoite on 90 %. Lisäksi Darma painaa vain luennat, joiden kaikki kolme sanaa se tuntee. Komento `READ_PARAGRAPHS=N` valitsee, kuinka monta kappaletta luetaan. Oletus on 2 000.
+
+Tulokset 2 000 kappaleella eli 8 921 lauseella, joiden lukeminen kesti 18 sekuntia:
+
+| Versio | Painettuja klausuuleja | Uusien parien tuki, 300 harjoitusklausuulia |
+|---|---|---|
+| Ilman lukemista | – | 120 / 300 |
+| Tarkkuustavoite 80 %, kaikki sanat | 1 306 | 108 / 300 |
+| Tarkkuustavoite 90 %, vain tunnetut sanat | 147 | 119 / 300 |
+
+- **80 %:n tavoitteella** painetuista oli silmämääräisesti noin puolet järkeviä, esimerkiksi "game / sold / units" ja "famitsu / enjoyed / story". Loput olivat roskaa, kuten "valkyria / chronicles / takeshi". Roskaparit heikensivät muistia.
+- **90 %:n tavoitteella ja tunnetuilla sanoilla** noin kaksi kolmesta oli järkeviä, mutta niitä oli vähän. Muisti ei parantunut.
+- **Kalibrointi on liian optimistinen.** Se tehdään harjoituslauseilla, jotka Darman roolimuisti jo tuntee. Lisäksi Wikipedia on eri tekstilaji kuin UD:n uutiset ja verkkotekstit.
+
+Koko 10 miljoonan sanan WikiText antaisi samalla tahdilla noin 7 000 klausuulia, joista kolmannes olisi vääriä. Se ei riitä muuttamaan kattavuutta. Lukemalla oppiminen kantaa vasta, kun Darma lukee luotettavammin. Ongelma on kehämäinen: kunnollinen lukeminen vaatii sitä tietoa, jota lukemalla yritetään kerätä.

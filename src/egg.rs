@@ -42,6 +42,11 @@ pub struct Path {
 
 /// all readings of the sentence, strongest first (the swim)
 pub fn swim(m: &Memory, at: &Atoms, words: &[String]) -> Vec<Sperm> {
+    swim_within(m, at, words, usize::MAX)
+}
+
+/// the swim, with the roles at most `maxd` words apart (for reading long text quickly)
+pub fn swim_within(m: &Memory, at: &Atoms, words: &[String], maxd: usize) -> Vec<Sperm> {
     let n = words.len();
     let fit: Vec<[f32; 4]> = (0..n).map(|i| m.fitness(at, words, i)).collect();
     let total = m.structures.len().max(1) as f32;
@@ -50,7 +55,7 @@ pub fn swim(m: &Memory, at: &Atoms, words: &[String]) -> Vec<Sperm> {
     for a in 0..n {
         for v in 0..n {
             for p in 0..n {
-                if a == v || v == p || a == p || words[a] == words[v] || words[v] == words[p] || words[a] == words[p] {
+                if a == v || v == p || a == p || words[a] == words[v] || words[v] == words[p] || words[a] == words[p] || a.abs_diff(v) > maxd || v.abs_diff(p) > maxd {
                     continue;
                 }
                 let o = crate::memory::ORDERS.iter().position(|x| *x == order_of([a, v, p])).unwrap();
@@ -109,4 +114,65 @@ pub fn understand(m: &Memory, at: &Atoms, lex: &Lexicon, sentence: &str) -> Path
     }
     path.sperm = sperm;
     path
+}
+
+/// learning by reading: Darma reads plain text (no marks), sentence by sentence; where the strongest reading beats
+/// the next by at least the learned margin and gets through the membrane, its pairs (who did what, what was done to
+/// whom) are struck into memory. The margin is learned on the marked training sentences: the smallest margin at which
+/// at least `precision` of the readings it lets through are right. Returns (sentences read, clauses struck, margin).
+pub fn learn_by_reading(m: &mut Memory, at: &Atoms, clauses: &[crate::memory::Clause], text: &[String], precision: f32) -> (usize, usize, f32) {
+    const MAXD: usize = 4;
+    // the margin, from the training sentences whose clauses people marked
+    let mut by: std::collections::BTreeMap<&str, Vec<[String; 3]>> = std::collections::BTreeMap::new();
+    for c in clauses {
+        by.entry(&c.sentence).or_default().push(c.gold());
+    }
+    let mut seen: Vec<(f32, bool)> = Vec::new();
+    for (s, golds) in &by {
+        let sw = swim_within(m, at, &tokens(s), MAXD);
+        if sw.len() >= 2 {
+            seen.push((sw[0].swim - sw[1].swim, golds.contains(&sw[0].fill)));
+        }
+    }
+    seen.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    let (mut right, mut margin) = (0usize, f32::MAX);
+    for (k, (mg, ok)) in seen.iter().enumerate() {
+        right += *ok as usize;
+        if k >= 20 && right as f32 / (k + 1) as f32 >= precision {
+            margin = *mg;
+        }
+    }
+    let (mut read, mut struck) = (0, 0);
+    for para in text {
+        for sent in para.split(['.', '!', '?']) {
+            let words = tokens(sent);
+            if words.len() < 3 || words.len() > 40 {
+                continue;
+            }
+            read += 1;
+            let sw = swim_within(m, at, &words, MAXD);
+            if sw.len() < 2 || sw[0].swim - sw[1].swim < margin {
+                continue;
+            }
+            let s = &sw[0];
+            // only what it knows: every word of the reading met before in the marked sentences
+            if !s.fill.iter().all(|w| m.word_roles.contains_key(w)) {
+                continue;
+            }
+            let f = |r: usize| m.fitness(at, &words, s.pos[r])[r];
+            if f(0).min(f(1)).min(f(2)) < m.membrane {
+                continue;
+            }
+            let [a, v, p] = s.fill.clone();
+            if std::env::var("DARMA_SHOW_READ").is_ok() && struck < 25 {
+                eprintln!("  struck: {a} / {v} / {p}   <- {}", words.join(" "));
+            }
+            m.agents_of.entry(v.clone()).or_default().push(a.clone());
+            m.patients_of.entry(v.clone()).or_default().push(p.clone());
+            m.did.entry(a).or_default().push(v.clone());
+            m.underwent.entry(p).or_default().push(v);
+            struck += 1;
+        }
+    }
+    (read, struck, margin)
 }

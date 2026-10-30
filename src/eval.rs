@@ -38,7 +38,16 @@ pub fn data() -> Data {
 
 pub fn train(at: &Atoms, d: &Data) -> (Memory, f64) {
     let t = Instant::now();
-    let m = Memory::train(at, &d.train, &d.tagged, &d.senses_train, 5, 0.05);
+    let mut m = Memory::train(at, &d.train, &d.tagged, &d.senses_train, 5, 0.05);
+    // learning by reading: plain WikiText, if downloaded (READ_PARAGRAPHS of it)
+    let n: usize = std::env::var("READ_PARAGRAPHS").ok().and_then(|x| x.parse().ok()).unwrap_or(2000);
+    if let Ok(s) = std::fs::read_to_string("data/raw/wikitext/text.txt") {
+        let text: Vec<String> = s.lines().take(n).map(String::from).collect();
+        let tr = Instant::now();
+        let (read, struck, margin) = crate::egg::learn_by_reading(&mut m, at, &d.train, &text, 0.9);
+        m.learn_fertile(at, &d.train, 0.05);
+        eprintln!("read {read} sentences of plain text in {:.0} s, struck {struck} clauses into memory (margin {margin:.2})", tr.elapsed().as_secs_f64());
+    }
     (m, t.elapsed().as_secs_f64())
 }
 
