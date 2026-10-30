@@ -7,6 +7,8 @@ mod egg;
 mod eval;
 mod lexicon;
 mod memory;
+mod qa;
+mod quantum;
 mod vector;
 
 use clap::{Parser, Subcommand};
@@ -35,6 +37,14 @@ enum Cmd {
     Ask { sentence: String },
     /// why the egg does not work: each layer measured on its own
     Diagnose,
+    /// the quantum-minded core: told the training clauses, asked who/what (state, operators, measurement)
+    Qa,
+    /// talk: tell Darma things and ask it with who/what
+    Chat {
+        /// how much a word's learned meaning turns its operator (0: none)
+        #[arg(long, default_value_t = 0.0)]
+        beta: f32,
+    },
     /// the words whose meanings are nearest to these words' meanings
     Near { words: Vec<String> },
 }
@@ -51,6 +61,8 @@ fn main() {
         }
         Cmd::Eval => eval::run(cli.dim, cli.seed),
         Cmd::Diagnose => eval::diagnose(cli.dim, cli.seed),
+        Cmd::Qa => qa::run(cli.dim, cli.seed),
+        Cmd::Chat { beta } => qa::chat(cli.dim, cli.seed, beta),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {
             let d = eval::data();

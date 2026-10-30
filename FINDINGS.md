@@ -161,3 +161,34 @@ Tulokset 2 000 kappaleella eli 8 921 lauseella, joiden lukeminen kesti 18 sekunt
 - **Kalibrointi on liian optimistinen.** Se tehdään harjoituslauseilla, jotka Darman roolimuisti jo tuntee. Lisäksi Wikipedia on eri tekstilaji kuin UD:n uutiset ja verkkotekstit.
 
 Koko 10 miljoonan sanan WikiText antaisi samalla tahdilla noin 7 000 klausuulia, joista kolmannes olisi vääriä. Se ei riitä muuttamaan kattavuutta. Lukemalla oppiminen kantaa vasta, kun Darma lukee luotettavammin. Ongelma on kehämäinen: kunnollinen lukeminen vaatii sitä tietoa, jota lukemalla yritetään kerätä.
+
+## Uusi ydin: kvanttihenkinen tila
+
+Omistajan neljä riviä ovat nyt ytimen rakenne. Toteutus on tiedostoissa `src/quantum.rs` ja `src/qa.rs`.
+
+| Rivi | Toteutus |
+|---|---|
+| tila = kompleksivektori | Kaikki kerrottu on superpositiona yhdessä tilassa. Lisäksi on avainrekisteri, jossa jokainen kerrottu lause on lomitettu jokaisen sanansa kanssa. |
+| sana = operaattori | Sana kääntää tilan jokaisen luvun vaihetta, ja kääntöä edeltää yksi järjestysaskel. Operaatio on unitaarinen. Askeleen takia "dog bit man" ja "man bit dog" ovat eri tiloja. |
+| kysymys = mittaus | Aukon jokainen ehdokas mitataan kysymyksen sanojen rekistereissä. Varmuus kertoo, missä määrin muisti pitää kysymyksen jonot samassa vaiheessa. |
+| vastaus = interferenssi | Sopivat faktat vahvistavat toisiaan, ja muut kumoutuvat satunnaisten vaiheidensa takia. Vastaus annetaan vain, jos voittaja erottuu muista. Muuten Darma sanoo "en ymmärrä". |
+
+**Mittaus:** Darmalle kerrottiin UD:n 682 oikeaa klausuulia, ja kysymykset tehtiin niistä korvaamalla tekijä sanalla "who" tai kohde sanalla "what". Dimensio oli 1 024.
+
+| Mittari | Tulos |
+|---|---|
+| Kerrotut faktat, oikea vastaus | 95,1 % |
+| Kerrotut faktat, väärä vastaus | 1,9 % |
+| Kerrotut faktat, "en ymmärrä" | 3,0 % |
+| Kertomattomat kysymykset, vastasi silti, 149 | 2,0 % |
+| Väärin päin kysytyt, vastasi silti, 675 | 4,0 % |
+| Nopeus | 14 ms kysymykseltä |
+| Kertominen | 682 lausetta 0,05 sekunnissa |
+
+**Mitä matkalla opittiin:**
+1. **Yksi tila täyttyy nopeasti.** Kun 682 faktaa on yhdessä 1 024-ulotteisessa tilassa, signaali hukkuu kohinaan, ja oikein meni 0 %. Isompi tila auttaa hitaasti: dimensiolla 16 384 oikein meni 22,5 % 200 faktasta. Lomittunut avainrekisteri ratkaisi tämän. Kysymyksen sanat romahduttavat muistin niihin faktoihin, jotka kerrottiin samojen sanojen kanssa.
+2. **Bornin todennäköisyys normalisoi ehdokkaiden kesken.** Silloin osittainen osuma näyttää yhtä varmalta kuin täysi. Päätös tehdään siksi jonokohtaisesta täsmäävyydestä, joka katkaistaan ykköseen, sekä siitä, kuinka paljon voittaja erottuu toiseksi parhaasta.
+3. **Kalibrointi tehdään vain mittauksilla, jotka oikeasti tehtiin.** Jos kysymyksen jotain sanaa ei ole kerrottu, Darma ei mittaa mitään ja sanoo "en ymmärrä".
+4. **Merkitysvektorit eivät auta tässä ytimessä.** Niiden kanssa oikein meni 93,9 %, ilman niitä 95,1 %. Ne tekevät sanoista toistensa kaltaisia, ja kohina lisääntyy.
+
+Keskustelun voi käynnistää komennolla `cargo run --release -- chat`.

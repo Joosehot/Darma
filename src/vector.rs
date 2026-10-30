@@ -58,6 +58,22 @@ impl HVec {
         s
     }
 
+    /// a step in the state's order: every component moves one place on (a permutation, so unitary)
+    pub fn shift(&self) -> HVec {
+        let n = self.0.len();
+        HVec((0..n).map(|i| self.0[(i + n - 1) % n]).collect())
+    }
+
+    /// the phases alone: every component brought to length 1 (zero stays zero)
+    pub fn phase(&self) -> HVec {
+        HVec(self.0.iter().map(|c| { let r = c.norm(); if r > 0.0 { c / r } else { *c } }).collect())
+    }
+
+    /// the complex inner product <self, o>
+    pub fn inner(&self, o: &HVec) -> Complex32 {
+        self.0.iter().zip(&o.0).map(|(a, b)| a * b.conj()).sum()
+    }
+
     pub fn norm(&self) -> f32 {
         self.0.iter().map(|c| c.norm_sqr()).sum::<f32>().sqrt()
     }
