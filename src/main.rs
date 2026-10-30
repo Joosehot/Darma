@@ -41,6 +41,13 @@ enum Cmd {
     Qa,
     /// the scale test: told every UD training sentence whole, asked about the marked clauses in their own words
     QaSentences,
+    /// the chat page in a browser
+    Serve {
+        #[arg(long, default_value_t = 5900)]
+        port: u16,
+        #[arg(long, default_value = "darma_memory.txt")]
+        memory: String,
+    },
     /// senses as measurements: which sense does memory hold in this place?
     QaSenses,
     /// talk: tell Darma things and ask it with who/what
@@ -74,7 +81,8 @@ fn main() {
         Cmd::Qa => qa::run(cli.dim, cli.seed),
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
-        Cmd::Chat { beta, memory, fresh } => qa::chat(cli.dim, cli.seed, beta, &memory, fresh),
+        Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
+        Cmd::Serve { port, memory } => qa::serve(cli.dim, cli.seed, &memory, port),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {
             let d = eval::data();

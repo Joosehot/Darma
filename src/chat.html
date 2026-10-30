@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Darma</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e3e1da;
+    --me: #1d1d1b; --me-ink: #f6f5f1; --accent: #3a5bd9;
+    --yes: #1f7a4d; --no: #9a5b12; --unknown: #8a8985; --told: #3a5bd9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b9a95; --line: #2d2d2a;
+      --me: #ecebe6; --me-ink: #141413; --accent: #8ea3f2;
+      --yes: #5fc792; --no: #e0a35a; --unknown: #8f8e89; --told: #8ea3f2;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; height: 100%; display: flex; flex-direction: column; padding: 0 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 20px 0 12px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 22px; margin: 0; letter-spacing: 0.02em; }
+  header .state { color: var(--muted); font-size: 14px; }
+  .help { color: var(--muted); font-size: 14px; padding: 12px 0 4px; }
+  .help b { color: var(--ink); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 12px; }
+  .chip { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  #log { flex: 1; overflow-y: auto; padding: 8px 0 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .me { align-self: flex-end; background: var(--me); color: var(--me-ink); border-bottom-right-radius: 4px; }
+  .darma { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .darma .said { font-weight: 600; }
+  .darma .why { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .darma.yes .said { color: var(--yes); }
+  .darma.no .said { color: var(--no); }
+  .darma.unknown .said { color: var(--unknown); }
+  .darma.told .said { color: var(--told); font-weight: 500; }
+  form { display: flex; gap: 8px; padding: 12px 0 20px; border-top: 1px solid var(--line); }
+  input { flex: 1; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button.send { font: inherit; border: 0; border-radius: 10px; padding: 0 18px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.send:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Darma</h1>
+    <span class="state" id="state">…</span>
+  </header>
+  <div class="help">
+    <b>Kerro</b> asioita englanniksi: <i>the dog chased the cat</i>.
+    <b>Kysy</b> sanoilla <i>who</i> tai <i>what</i>: <i>who chased the cat</i>, <i>the dog chased what</i>.
+    <b>Kyllä vai ei</b>: lopeta kysymysmerkkiin, <i>the dog chased the cat?</i>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div id="log" aria-live="polite"></div>
+  <form id="f">
+    <input id="q" autocomplete="off" placeholder="Kirjoita Darmalle…" autofocus>
+    <button class="send" id="send">Lähetä</button>
+  </form>
+</div>
+<script>
+const examples = ["rex is a dog", "the dog chased the cat", "rex chased what", "who chased the cat", "rex chased the cat?", "the cat chased the dog?"];
+const log = document.getElementById("log"), q = document.getElementById("q"), send = document.getElementById("send"), state = document.getElementById("state");
+const setState = n => { state.textContent = n === 1 ? "muistaa 1 asian" : `muistaa ${n} asiaa`; };
+for (const e of examples) {
+  const c = document.createElement("button");
+  c.className = "chip"; c.type = "button"; c.textContent = e;
+  c.onclick = () => { q.value = e; q.focus(); };
+  document.getElementById("chips").appendChild(c);
+}
+function add(cls, said, why) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  if (cls.startsWith("darma")) {
+    const s = document.createElement("div"); s.className = "said"; s.textContent = said; d.appendChild(s);
+    if (why) { const w = document.createElement("div"); w.className = "why"; w.textContent = why; d.appendChild(w); }
+  } else d.textContent = said;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+}
+fetch("/state").then(r => r.json()).then(j => setState(j.told)).catch(() => state.textContent = "ei yhteyttä");
+document.getElementById("f").onsubmit = async ev => {
+  ev.preventDefault();
+  const text = q.value.trim();
+  if (!text) return;
+  add("me", text); q.value = ""; send.disabled = true;
+  try {
+    const r = await fetch("/say", { method: "POST", body: text });
+    const j = await r.json();
+    add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why);
+    setState(j.told);
+  } catch (e) {
+    add("darma unknown", "yhteys katkesi", "onko darma serve käynnissä?");
+  }
+  send.disabled = false; q.focus();
+};
+</script>
+</body>
+</html>

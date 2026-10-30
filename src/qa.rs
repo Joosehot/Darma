@@ -148,66 +148,135 @@ pub fn run(dim: usize, seed: u64) {
     }
 }
 
-/// a conversation: a line with who/what is a question (measured), a line ending in "?" is a yes/no question, any
-/// other line is told (added to the state). What was told is kept in `memory` (one sentence a line) and told again
-/// when the conversation starts (the same state, exactly: telling is deterministic).
-pub fn chat(dim: usize, seed: u64, beta: f32, memory: &str, fresh: bool) {
-    let at = Atoms::new(dim, seed);
-    let m = (beta > 0.0).then(|| train(&at, &data()).0);
-    let mut core = Core::new(&at, m.as_ref(), beta);
-    let mut known: Vec<String> = Vec::new();
-    if fresh {
-        let _ = std::fs::remove_file(memory);
-    }
-    let kept: Vec<String> = std::fs::read_to_string(memory).map(|s| s.lines().map(String::from).collect()).unwrap_or_default();
-    for line in &kept {
-        core.tell(&words_of(line));
-    }
-    // the copulas people marked in UD (seen at least 20 times): what says two things are the same
-    let copulas: Vec<String> = std::fs::read_to_string("data/copulas.json")
-        .ok()
-        .and_then(|s| serde_json::from_str::<std::collections::BTreeMap<String, usize>>(&s).ok())
-        .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
-        .unwrap_or_default();
-    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-    println!("Darma listens ({} things remembered from before, in {memory}). Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\") or end with ? (\"the dog chased the cat?\"). Empty line ends.", kept.len());
-    for line in std::io::stdin().lines() {
-        let line = line.unwrap();
-        let w = words_of(&line);
-        if w.is_empty() {
-            break;
+/// a conversation with Darma: a line with who/what is a question (measured), a line ending in "?" is a yes/no
+/// question, any other line is told (added to the state). What was told is kept in `memory` (one sentence a line)
+/// and told again when the conversation starts (the same state, exactly: telling is deterministic).
+pub struct Talk<'a> {
+    pub core: Core<'a>,
+    copulas: Vec<String>,
+    log: std::fs::File,
+    pub remembered: usize,
+}
+
+/// one reply: what Darma says, and on what it stood (empty when it stood on nothing more than the question)
+pub struct Reply {
+    pub said: String,
+    pub why: String,
+    pub kind: &'static str,
+}
+
+impl<'a> Talk<'a> {
+    pub fn new(at: &'a Atoms, memory: &str, fresh: bool) -> Self {
+        let mut core = Core::new(at, None, 0.0);
+        // with few things told there is little noise to learn from: the winner must hold over half of the question
+        // and stand out by half a match (set by hand, not learned)
+        core.threshold = 0.5;
+        core.fid_threshold = 3.0;
+        if fresh {
+            let _ = std::fs::remove_file(memory);
         }
-        if line.trim_end().ends_with('?') && !w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
-            match core.verify_reasoned(&w, &copulas, 3.0) {
-                None => println!("Darma: en tiedä      (some of these words I was never told)"),
-                Some((true, why)) if why.is_empty() => println!("Darma: kyllä"),
-                Some((true, why)) => println!("Darma: kyllä      (because {})", why.join("; ")),
-                Some((false, _)) => println!("Darma: ei sen mukaan mitä tiedän"),
+        let kept: Vec<String> = std::fs::read_to_string(memory).map(|s| s.lines().map(String::from).collect()).unwrap_or_default();
+        for line in &kept {
+            core.tell(&words_of(line));
+        }
+        // the copulas people marked in UD (seen at least 20 times): what says two things are the same
+        let copulas: Vec<String> = std::fs::read_to_string("data/copulas.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<std::collections::BTreeMap<String, usize>>(&s).ok())
+            .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
+            .unwrap_or_default();
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
+        Talk { core, copulas, log, remembered: kept.len() }
+    }
+
+    pub fn line(&mut self, line: &str) -> Reply {
+        let w = words_of(line);
+        let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
+        let r = |said: &str, why: String, kind| Reply { said: said.to_string(), why, kind };
+        if w.is_empty() {
+            r("", String::new(), "none")
+        } else if line.trim_end().ends_with('?') && !hole {
+            match self.core.verify_reasoned(&w, &self.copulas, 3.0) {
+                None => r("en tiedä", "some of these words I was never told".into(), "unknown"),
+                Some((true, why)) if why.is_empty() => r("kyllä", String::new(), "yes"),
+                Some((true, why)) => r("kyllä", format!("because {}", why.join("; ")), "yes"),
+                Some((false, _)) => r("ei sen mukaan mitä tiedän", "I know these words, but not this of them".into(), "no"),
             }
-        } else if w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
-            // with few things told there is little noise to learn from: the winner must hold over half of the
-            // question and stand out by half a match
-            core.threshold = 0.5;
-            core.fid_threshold = 3.0;
-            match core.answer_reasoned(&w, &copulas) {
-                (Some(x), why) if why.is_empty() => println!("Darma: {x}"),
-                (Some(x), why) => println!("Darma: {x}      (because {})", why.join("; ")),
-                (None, _) => println!("Darma: en ymmärrä"),
+        } else if hole {
+            match self.core.answer_reasoned(&w, &self.copulas) {
+                (Some(x), why) if why.is_empty() => r(&x, String::new(), "answer"),
+                (Some(x), why) => r(&x, format!("because {}", why.join("; ")), "answer"),
+                (None, _) => r("en ymmärrä", "nothing I was told stands out as the answer".into(), "unknown"),
             }
         } else {
-            core.tell(&w);
+            self.core.tell(&w);
             use std::io::Write;
-            let _ = writeln!(log, "{}", w.join(" "));
-            // what can fill a hole: every word told, and every two words told together
-            let mut fills: Vec<String> = w.clone();
-            fills.extend(w.windows(2).map(|p| p.join(" ")));
-            for x in fills {
-                if !known.contains(&x) {
-                    known.push(x);
-                }
-            }
-            println!("Darma: (told: {} things)", core.told);
+            let _ = writeln!(self.log, "{}", w.join(" "));
+            r("muistan", format!("{} things told", self.core.told), "told")
         }
+    }
+}
+
+pub fn chat(dim: usize, seed: u64, memory: &str, fresh: bool) {
+    let at = Atoms::new(dim, seed);
+    let mut talk = Talk::new(&at, memory, fresh);
+    println!("Darma listens ({} things remembered from before, in {memory}). Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\") or end with ? (\"the dog chased the cat?\"). Empty line ends.", talk.remembered);
+    for line in std::io::stdin().lines() {
+        let line = line.unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+        let rep = talk.line(&line);
+        if rep.why.is_empty() || rep.kind == "told" {
+            println!("Darma: {}", rep.said);
+        } else {
+            println!("Darma: {}      ({})", rep.said, rep.why);
+        }
+    }
+}
+
+/// the chat page (`darma serve`): the same conversation in a browser, at http://localhost:PORT
+pub fn serve(dim: usize, seed: u64, memory: &str, port: u16) {
+    use std::io::{Read, Write};
+    let at = Atoms::new(dim, seed);
+    let mut talk = Talk::new(&at, memory, false);
+    let page = include_str!("chat.html");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("port in use");
+    println!("Darma: http://localhost:{port}  ({} things remembered, in {memory})", talk.remembered);
+    for stream in listener.incoming() {
+        let Ok(mut s) = stream else { continue };
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        // the head, then as much body as it says
+        let (head, body) = loop {
+            let Ok(k) = s.read(&mut chunk) else { break (String::new(), String::new()) };
+            if k == 0 {
+                break (String::new(), String::new());
+            }
+            buf.extend_from_slice(&chunk[..k]);
+            if let Some(p) = buf.windows(4).position(|x| x == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..p]).to_string();
+                let len: usize = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+                while buf.len() < p + 4 + len {
+                    let Ok(k) = s.read(&mut chunk) else { break };
+                    if k == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..k]);
+                }
+                break (head, String::from_utf8_lossy(&buf[p + 4..(p + 4 + len).min(buf.len())]).to_string());
+            }
+        };
+        let (ctype, out) = if head.starts_with("POST /say") {
+            let rep = talk.line(body.trim());
+            let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "told": talk.core.told});
+            ("application/json", j.to_string())
+        } else if head.starts_with("GET /state") {
+            ("application/json", serde_json::json!({"told": talk.core.told, "memory": memory}).to_string())
+        } else {
+            ("text/html; charset=utf-8", page.to_string())
+        };
+        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
     }
 }
 
