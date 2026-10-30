@@ -18,6 +18,7 @@ fn load<T: serde::de::DeserializeOwned>(p: &str) -> T {
 
 pub struct Data {
     pub train: Vec<Clause>,
+    pub tagged: Vec<crate::memory::Tagged>,
     pub test: Vec<Clause>,
     pub senses_train: Vec<SenseCase>,
     pub senses_test: Vec<SenseCase>,
@@ -27,6 +28,7 @@ pub struct Data {
 pub fn data() -> Data {
     Data {
         train: load("data/train.json"),
+        tagged: load("data/roles_train.json"),
         test: load("data/test.json"),
         senses_train: load("data/senses_train.json"),
         senses_test: load("data/senses_test.json"),
@@ -36,7 +38,7 @@ pub fn data() -> Data {
 
 pub fn train(at: &Atoms, d: &Data) -> (Memory, f64) {
     let t = Instant::now();
-    let m = Memory::train(at, &d.train, &d.senses_train, 5, 0.05);
+    let m = Memory::train(at, &d.train, &d.tagged, &d.senses_train, 5, 0.05);
     (m, t.elapsed().as_secs_f64())
 }
 
@@ -90,11 +92,10 @@ pub fn run(dim: usize, seed: u64) {
     for (s, golds) in &by_sentence {
         let words = tokens(s);
         let sw = swim(&m, &at, &words);
-        let top: Vec<&[String; 3]> = sw.iter().take(crate::egg::TOP).map(|x| &x.fill).collect();
-        if let Some(g) = golds.iter().find(|g| top.contains(g)) {
+        if let Some(sp) = sw.iter().take(crate::egg::TOP).find(|x| golds.contains(&x.fill)) {
             in_top += 1;
-            let st = normalised(structure(&at, g));
-            gold_in += (m.structures.iter().map(|x| st.sim(&x.0)).fold(f32::MIN, f32::max) >= m.membrane) as usize;
+            let f = |r: usize| m.fitness(&at, &words, sp.pos[r])[r];
+            gold_in += (f(0).min(f(1)).min(f(2)) >= m.membrane) as usize;
         }
         gold_unknown += golds.iter().all(|g| (0..3).any(|r| !m.role_count[r].contains_key(&g[r]))) as usize;
     }
@@ -135,7 +136,8 @@ pub fn run(dim: usize, seed: u64) {
         order_sims.push(a.sim(&b));
     }
     let order_mean = order_sims.iter().sum::<f32>() / order_sims.len() as f32;
-    let order_below = order_sims.iter().filter(|&&x| x < m.membrane).count();
+    // "a different state": below 0.5, halfway between the same state (1.0) and chance (0.0); set by hand
+    let order_below = order_sims.iter().filter(|&&x| x < 0.5).count();
 
     // senses
     let (mut sense_right, mut base_sense_right) = (0, 0);
@@ -167,7 +169,7 @@ pub fn run(dim: usize, seed: u64) {
     row(&format!("3. nonsense rejected (n={})", nonsense.len()), pct(nonsense_rejected, nonsense.len()), Some(pct(base_ns_rejected, nonsense.len())));
     row(&format!("4. false rejections, sentences (n={n})"), pct(n - said, n), None);
     row(&format!("4. false rejections, clauses alone (n={})", d.test.len()), pct(d.test.len() - clause_ok, d.test.len()), None);
-    println!("5. order: 'a v p' vs 'p v a' similarity {order_mean:.3} on average; {order_below} of {} below the membrane threshold {:.3}", order_sims.len(), m.membrane);
+    println!("5. order: 'a v p' vs 'p v a' similarity {order_mean:.3} on average; {order_below} of {} below 0.5 (set by hand: halfway between the same state and chance)", order_sims.len());
     println!("6. speed: {mean_us:.0} us a sentence through the egg; training {train_s:.2} s");
     println!("\nsense per word (Darma / most common sense, n):");
     for (w, (a, b, k)) in &per_word {

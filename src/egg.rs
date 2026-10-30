@@ -1,13 +1,14 @@
 //! The swim and the egg.
 //!
 //! The sperm: every way to read the sentence as (agent, action, patient), three different words of it. Each swims
-//! with the strength memory gives it: how often each word filled its role (read from the role bundles) and how
-//! often that order of roles was seen (read from the order bundle), all by interference with the stored vectors.
+//! with the strength memory gives it: how fit each word is for its role (its own role memory and its neighbourhood),
+//! how often that order of roles was seen and how far apart the roles stood, all read by interference.
 //! Without the egg (stage 3) the strongest sperm is the answer.
 //!
 //! The egg, three layers, each dearer than the one before and each one sifting:
-//!   1. membrane: a sperm's structure is held against every stored structure; if it is less like the most alike one
-//!      than the learned threshold, it does not get in;
+//!   1. membrane: each word of a sperm is held against what the core knows of it (its role memory and
+//!      neighbourhood); if any word fits its role worse than the learned threshold (set against chance: random
+//!      readings of training sentences), the sperm does not get in;
 //!   2. competition: a word with more than one sense has a sperm per sense; the sense whose context vector the
 //!      sentence's words reinforce most wins (interference), and every candidate's score is logged;
 //!   3. fertilisation: the winner is merged with what memory recalls of it, and Darma tests itself: does each role
@@ -19,7 +20,6 @@ use crate::memory::{normalised, order_of, structure, Memory};
 use crate::vector::HVec;
 
 pub const TOP: usize = 30;
-
 pub struct Sperm {
     pub fill: [String; 3],
     pub pos: [usize; 3],
@@ -43,8 +43,9 @@ pub struct Path {
 /// all readings of the sentence, strongest first (the swim)
 pub fn swim(m: &Memory, at: &Atoms, words: &[String]) -> Vec<Sperm> {
     let n = words.len();
-    let w: Vec<[f32; 3]> = words.iter().map(|x| [0, 1, 2].map(|r| m.role_weight(at, x, r))).collect();
-    let ord: Vec<f32> = crate::memory::ORDERS.iter().map(|o| m.order_weight(at, o)).collect();
+    let fit: Vec<[f32; 4]> = (0..n).map(|i| m.fitness(at, words, i)).collect();
+    let total = m.structures.len().max(1) as f32;
+    let ord: Vec<f32> = crate::memory::ORDERS.iter().map(|o| (m.order_weight(at, o) / total).max(1e-3)).collect();
     let mut out = Vec::new();
     for a in 0..n {
         for v in 0..n {
@@ -53,7 +54,9 @@ pub fn swim(m: &Memory, at: &Atoms, words: &[String]) -> Vec<Sperm> {
                     continue;
                 }
                 let o = crate::memory::ORDERS.iter().position(|x| *x == order_of([a, v, p])).unwrap();
-                let swim = (1.0 + w[a][0]).ln() + (1.0 + w[v][1]).ln() + (1.0 + w[p][2]).ln() + (1.0 + ord[o]).ln();
+                let lnp = |x: f32| x.max(1e-3).ln();
+                let swim = lnp(fit[a][0]) + lnp(fit[v][1]) + lnp(fit[p][2]) + ord[o].ln()
+                    + m.dist_share(at, 0, a.abs_diff(v)).ln() + m.dist_share(at, 1, v.abs_diff(p)).ln();
                 out.push(Sperm { fill: [words[a].clone(), words[v].clone(), words[p].clone()], pos: [a, v, p], swim });
             }
         }
@@ -86,7 +89,8 @@ pub fn understand(m: &Memory, at: &Atoms, lex: &Lexicon, sentence: &str) -> Path
     let mut inside: Vec<(usize, HVec)> = Vec::new();
     for (k, s) in sperm.iter().enumerate() {
         let st = normalised(structure(at, &s.fill));
-        let c = m.structures.iter().map(|x| st.sim(&x.0)).fold(f32::MIN, f32::max);
+        // compatible with what the core knows: every word fits the role it is given, better than chance does
+        let c = m.fitness(at, &words, s.pos[0])[0].min(m.fitness(at, &words, s.pos[1])[1]).min(m.fitness(at, &words, s.pos[2])[2]);
         if c >= m.membrane {
             inside.push((k, st));
         } else {

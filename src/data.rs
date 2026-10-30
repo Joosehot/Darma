@@ -34,6 +34,14 @@ pub struct SenseCase {
     pub sense: String,
 }
 
+/// a UD sentence's words with the role each one plays, as people marked it: A (a verb's noun subject), V (a verb
+/// with a subject or an object), P (a verb's noun object), - (no role)
+#[derive(Serialize)]
+pub struct Tagged {
+    pub words: Vec<String>,
+    pub roles: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct Word {
     word: String,
@@ -91,6 +99,47 @@ fn clauses(path: &Path) -> Vec<Clause> {
     out
 }
 
+fn tagged(path: &Path) -> Vec<Tagged> {
+    let text = fs::read_to_string(path).expect("UD file");
+    let mut out = Vec::new();
+    for block in text.split("\n\n") {
+        let toks: Vec<Tok> = block
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|line| {
+                let f: Vec<&str> = line.split('\t').collect();
+                if f.len() < 8 || f[0].contains('-') || f[0].contains('.') {
+                    return None;
+                }
+                Some(Tok { form: f[1].to_lowercase(), lemma: f[2].to_lowercase(), upos: f[3].into(), head: f[6].parse().unwrap_or(0), rel: f[7].into() })
+            })
+            .collect();
+        let verb = |h: usize| h > 0 && toks.get(h - 1).is_some_and(|t| t.upos == "VERB");
+        let mut words = Vec::new();
+        let mut roles = Vec::new();
+        for (i, t) in toks.iter().enumerate() {
+            // only letters, split as Darma splits a sentence (so the words line up with what it reads)
+            let role = if t.rel == "nsubj" && t.upos == "NOUN" && verb(t.head) {
+                "A"
+            } else if t.rel == "obj" && t.upos == "NOUN" && verb(t.head) {
+                "P"
+            } else if t.upos == "VERB" && toks.iter().any(|k| k.head == i + 1 && (k.rel == "nsubj" || k.rel == "obj")) {
+                "V"
+            } else {
+                "-"
+            };
+            for piece in t.form.split(|c: char| !c.is_alphabetic()).filter(|x| !x.is_empty()) {
+                words.push(piece.to_string());
+                roles.push(role.to_string());
+            }
+        }
+        if !words.is_empty() {
+            out.push(Tagged { words, roles });
+        }
+    }
+    out
+}
+
 fn senses(dir: &Path, split: &str) -> (Vec<SenseCase>, BTreeMap<String, Vec<String>>) {
     let mut cases = Vec::new();
     let mut names = BTreeMap::new();
@@ -132,6 +181,10 @@ pub fn prepare(dir: &Path) -> std::io::Result<()> {
     lex.extend(verbs.iter().map(|w| Word { word: w.clone(), pos: "verb".into(), senses: vec![format!("{w}#1")] }));
     let put = |name: &str, s: String| fs::write(dir.join(name), s);
     put("lexicon.json", serde_json::to_string_pretty(&lex).unwrap())?;
+    let mut tg = tagged(&raw.join("ud/en_ewt-ud-train.conllu"));
+    tg.extend(tagged(&raw.join("ud/en_ewt-ud-dev.conllu")));
+    put("roles_train.json", serde_json::to_string(&tg).unwrap())?;
+    println!("role-marked training sentences (UD EWT train + dev): {}, {} words", tg.len(), tg.iter().map(|t| t.words.len()).sum::<usize>());
     put("train.json", serde_json::to_string_pretty(&train).unwrap())?;
     put("test.json", serde_json::to_string_pretty(&test).unwrap())?;
     put("senses_train.json", serde_json::to_string_pretty(&wsd_train).unwrap())?;

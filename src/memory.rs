@@ -38,6 +38,17 @@ pub struct SenseCase {
     pub sense: String,
 }
 
+#[derive(Deserialize, Clone)]
+pub struct Tagged {
+    pub words: Vec<String>,
+    pub roles: Vec<String>,
+}
+
+/// the four things a word can be in a clause: agent, action, patient, or none of them
+pub const ROLE_TAGS: [&str; 4] = ["A", "V", "P", "-"];
+pub const SYNTAX_WINDOW: usize = 2;
+pub const DIST_MAX: usize = 8;
+
 pub const ORDERS: [&str; 6] = ["AVP", "APV", "VAP", "VPA", "PAV", "PVA"];
 
 pub struct Memory {
@@ -45,6 +56,12 @@ pub struct Memory {
     pub roles: [HVec; 3],
     pub order: HVec,
     pub contexts: HashMap<String, HVec>,
+    /// every word's own memory of the roles it played: one bundle of role atoms per word
+    pub word_roles: HashMap<String, HVec>,
+    /// the neighbourhood each role has (the words around it), for words never seen
+    pub role_ctx: [HVec; 4],
+    /// how far apart agent and action, action and patient were
+    pub dist: [HVec; 2],
     pub idf: HashMap<String, f32>,
     pub window: usize,
     pub membrane: f32,
@@ -83,13 +100,16 @@ fn quantile(mut v: Vec<f32>, q: f32) -> f32 {
 }
 
 impl Memory {
-    pub fn train(at: &Atoms, clauses: &[Clause], senses: &[SenseCase], window: usize, q: f32) -> Memory {
+    pub fn train(at: &Atoms, clauses: &[Clause], tagged: &[Tagged], senses: &[SenseCase], window: usize, q: f32) -> Memory {
         let d = at.d;
         let mut m = Memory {
             structures: Vec::new(),
             roles: [HVec::zero(d), HVec::zero(d), HVec::zero(d)],
             order: HVec::zero(d),
             contexts: HashMap::new(),
+            word_roles: HashMap::new(),
+            role_ctx: [HVec::zero(d), HVec::zero(d), HVec::zero(d), HVec::zero(d)],
+            dist: [HVec::zero(d), HVec::zero(d)],
             idf: HashMap::new(),
             window,
             membrane: 0.0,
@@ -102,11 +122,25 @@ impl Memory {
             m.structures.push((normalised(structure(at, &g)), g.clone()));
             for r in 0..3 {
                 m.roles[r].add(&at.word(&g[r]));
-                *m.role_count[r].entry(g[r].clone()).or_default() += 1;
             }
             let t = tokens(&c.sentence);
             if let (Some(a), Some(v), Some(p)) = (t.iter().position(|x| *x == g[0]), t.iter().position(|x| *x == g[1]), t.iter().position(|x| *x == g[2])) {
                 m.order.add(&at.get(order_of([a, v, p])));
+                m.dist[0].add(&at.get(&format!("dAV:{}", a.abs_diff(v).min(DIST_MAX))));
+                m.dist[1].add(&at.get(&format!("dVP:{}", v.abs_diff(p).min(DIST_MAX))));
+            }
+        }
+        // every marked word of every training sentence strikes its role into the word's own memory, and its
+        // neighbourhood into the role's
+        for s in tagged {
+            for (i, (w, r)) in s.words.iter().zip(&s.roles).enumerate() {
+                let r = ROLE_TAGS.iter().position(|x| x == r).unwrap();
+                m.word_roles.entry(w.clone()).or_insert_with(|| HVec::zero(d)).add(&at.get(&format!("r:{}", ROLE_TAGS[r])));
+                let c = Self::near(at, &s.words, i);
+                m.role_ctx[r].add(&normalised(c));
+                if r < 3 {
+                    *m.role_count[r].entry(w.clone()).or_default() += 1;
+                }
             }
         }
         // how rare each word is among the sense sentences
@@ -135,7 +169,25 @@ impl Memory {
             let words: Vec<String> = tokens(&clauses[i].sentence);
             marg.push(m.read_back(at, s, g, &words, Some(i)).1);
         }
-        m.membrane = quantile(comp, q);
+        let _ = comp;
+        // the membrane's threshold against chance: random readings of training sentences (three different words in
+        // the three roles); a reading must fit its roles better than 1 - q of them
+        {
+            use rand::{Rng, SeedableRng};
+            let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(99);
+            let mut chance = Vec::new();
+            for s in tagged.iter().filter(|s| s.words.len() >= 3).take(3000) {
+                let fit: Vec<[f32; 4]> = (0..s.words.len()).map(|i| m.fitness(at, &s.words, i)).collect();
+                for _ in 0..5 {
+                    let n = s.words.len();
+                    let (a, v, p) = (rng.gen_range(0..n), rng.gen_range(0..n), rng.gen_range(0..n));
+                    if a != v && v != p && a != p {
+                        chance.push(fit[a][0].min(fit[v][1]).min(fit[p][2]));
+                    }
+                }
+            }
+            m.membrane = quantile(chance, 1.0 - q);
+        }
         m.fertile = quantile(marg, q);
         m
     }
@@ -152,6 +204,48 @@ impl Memory {
             }
         }
         c
+    }
+
+    /// the plain neighbourhood of position i (SYNTAX_WINDOW words each side, each at its side and distance)
+    pub fn near(at: &Atoms, words: &[String], i: usize) -> HVec {
+        let mut c = HVec::zero(at.d);
+        for k in 1..=SYNTAX_WINDOW {
+            if i >= k {
+                c.add(&at.get(&format!("pos:-{k}")).bind(&at.word(&words[i - k])));
+            }
+            if i + k < words.len() {
+                c.add(&at.get(&format!("pos:+{k}")).bind(&at.word(&words[i + k])));
+            }
+        }
+        c
+    }
+
+    /// how fit the word at position i is for each role (A, V, P, none): its own memory read by interference with the
+    /// role atoms (how often it played each), with its neighbourhood's likeness to each role's as one more vote
+    pub fn fitness(&self, at: &Atoms, words: &[String], i: usize) -> [f32; 4] {
+        let c = Self::near(at, words, i);
+        let mut pc = [0f32; 4];
+        for r in 0..4 {
+            pc[r] = c.sim(&self.role_ctx[r]).max(0.0);
+        }
+        let s: f32 = pc.iter().sum::<f32>().max(1e-9);
+        let mut counts = [0f32; 4];
+        if let Some(v) = self.word_roles.get(&words[i]) {
+            for r in 0..4 {
+                let a = at.get(&format!("r:{}", ROLE_TAGS[r]));
+                counts[r] = (v.0.iter().zip(&a.0).map(|(x, y)| (x * y.conj()).re).sum::<f32>() / at.d as f32).max(0.0);
+            }
+        }
+        let n: f32 = counts.iter().sum();
+        [0, 1, 2, 3].map(|r| (counts[r] + pc[r] / s) / (n + 1.0))
+    }
+
+    /// the share of training clauses with this distance (read from the bundle)
+    pub fn dist_share(&self, at: &Atoms, which: usize, k: usize) -> f32 {
+        let name = format!("{}:{}", ["dAV", "dVP"][which], k.min(DIST_MAX));
+        let v = at.get(&name);
+        let dot: f32 = v.0.iter().zip(&self.dist[which].0).map(|(a, b)| (a * b.conj()).re).sum::<f32>() / at.d as f32;
+        (dot / self.structures.len().max(1) as f32).max(1e-3)
     }
 
     /// how often a word filled role r (read from the role bundle by interference, not from a count)

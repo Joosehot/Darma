@@ -71,3 +71,25 @@ Erittely koskee 72:ta testilausetta, joiden roolit Darma luki koko lauseesta.
 1. **Kynnykset satunnaisuutta vastaan eikä harjoitusjakaumasta.** Kalvon ja hedelmöityksen kynnys opitaan vertaamalla, kuinka paljon satunnainen luenta saa samasta muistista. Luenta pääsee läpi vain, jos se muistuttaa muistia selvästi enemmän kuin sattuma, esimerkiksi tasolla, jonka 95 % satunnaisluennoista alittaa. Kynnys on yhä opittu datasta, mutta se ei romahda nollaan, kun data on harvaa. Kohinan odotusarvo kannattaa samalla vähentää roolinippujen lukemista.
 2. **Sanojen roolikelpoisuus kaikista UD-lauseista.** Nyt muisti näkee vain 682 klausuulin kolme sanaa. UD EWT:ssä on kuitenkin noin 12 500 merkittyä lausetta, ja niissä jokaisella sanalla on lauseenjäsen. Yhdellä läpikäynnillä jokainen sana saa nipun siitä, missä rooleissa se esiintyy ja missä ei. Silloin "in" ja "the" oppivat, etteivät ne ole koskaan tekijöitä. Lisäksi ennennäkemätön sana saa roolitietoa naapuriensa kautta, samalla kontekstiniputuksella kuin merkitykset. Tämä korjaisi uinnin, jossa 42 lausetta 72:sta hävisi.
 3. **Hedelmöitys kilpailevaksi.** Itsetesti ei saa purkaa vain luennan omaa rakennetta. Voittaja ja toiseksi paras luenta yhdistetään samaan tilaan, ja vain se hyväksytään, jonka roolit purkautuvat selvästi vahvempina. Lisäksi puhdistusmuistin pitää kattaa koko sanasto eikä vain lauseen sanoja. Silloin "en ymmärrä" syntyy, kun kaksi luentaa ovat yhtä vahvoja tai kun muisti vetää eri suuntaan kuin luenta. Juuri niin kävisi järjettömälle lauseelle.
+
+## Jatko: kolme ehdotusta kokeiltu
+
+Mittaukset tehtiin samalla datalla ja samalla `eval`-komennolla. Kukin muutos mitattiin erikseen.
+
+| Mittari | v0 | + ehdotus 2: roolikelpoisuus kaikista UD-lauseista | + ehdotus 1: kalvon kynnys sattumaa vastaan | + ehdotus 3: kilpaileva hedelmöitys, peruttu |
+|---|---|---|---|---|
+| Roolit koko lauseesta, 72 | 5,6 % | 45,8 % | 45,8 % | 0 % |
+| Oikea luenta 30 vahvimman joukossa | 30 / 72 | 62 / 72 | 62 / 72 | 62 / 72 |
+| Roolit pelkästä klausuulista, 77 | 94,8 % | 94,8 % | 64,9 % | 1,3 % |
+| Järjettömien hylkäys, 30 | 0 % | 0 % | 13,3 % | 100 % |
+| Väärät hylkäykset, lauseet | 0 % | 0 % | 0 % | 91,7 % |
+| Väärät hylkäykset, klausuulit | 0 % | 0 % | 26,0 % | 96,1 % |
+| Nopeus lauseelta | 41 ms | 41 ms | 28 ms | 2 000 ms |
+
+Vertailukohta sai samalla saman tiedon kuin Darma, eli roolilaskurit kaikista UD-harjoituslauseista. Sen tulokset ovat nyt 4,2 % rooleissa ja 63,3 % järjettömien hylkäyksessä.
+
+- **Ehdotus 2 toimi parhaiten.** Jokainen UD-harjoituslauseen sana, yhteensä 14 449 lausetta ja noin 200 000 sanaa, painoi roolinsa omaan nippuunsa, myös roolittomuuden. Lisäksi sanan naapurusto painettiin roolin kontekstiprototyyppiin. Uinti löytää nyt oikean luennan 62 lauseessa 72:sta, ja roolit osuvat 45,8 %:ssa, kun aiemmin osuma oli 5,6 %. Täytesanat kuten "in" ja "the" eivät enää nouse rooleihin.
+- **Ehdotus 1 antoi kalvolle hampaat, mutta liian vähän.** Kalvo tarkistaa nyt, sopiiko jokainen sana sille annettuun rooliin. Kynnys on se taso, jonka 95 % satunnaisluennoista alittaa, eli 0,023. Järjettömistä hylätään 13,3 %, mutta samalla 26 % oikeista klausuuleista hylätään väärin. Kokonaisissa lauseissa väärät hylkäykset pysyvät nollassa, koska jokin luenta pääsee aina läpi.
+- **Ehdotus 3 ei toiminut, ja se peruttiin.** Viisi vahvinta luentaa yhdistettiin uintivoimilla painotettuna, ja roolit purettiin koko sanastoa vastaan. Kynnyksen piti oppia satunnaisista luentajoukoista. Satunnaisetkin joukot purkautuivat kuitenkin selvästi, koska painotus antaa aina yhdelle luennalle lähes kaiken painon. Kynnys nousi 0,49:ään, ja melkein kaikki hylättiin. Marginaali mittaa siis painojen epätasaisuutta eikä ymmärrystä. Lisäksi koko sanaston puhdistus vei kaksi sekuntia lauseelta.
+
+Hedelmöitys on siis edelleen kerros, joka ei tee työtään: sen itsetesti onnistuu aina. Seuraavaksi kannattaa kokeilla testiä, joka mittaa luennan ja muistin välistä ristiriitaa eikä vektorien siisteyttä. Esimerkki: kun luenta yhdistetään muistin palauttamaan tietoon, siirtyykö jonkin roolin purku toiseen sanaan?
