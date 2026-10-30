@@ -118,6 +118,10 @@ pub fn statement_order(words: &[String]) -> Vec<String> {
     if HOLES.contains(&first) && words.len() == 3 && words[2] == "you" && !COPULAS.contains(&second) {
         return vec!["you".into(), "were".into(), words[1].clone(), "by".into(), words[0].clone()];
     }
+    // "do i like dogs" -> "i like dogs" (the same hand rule as "what do you like")
+    if matches!(first, "do" | "does" | "did") && words.len() > 2 {
+        return words[1..].to_vec();
+    }
     if COPULAS.contains(&first) && words.len() > 2 {
         let mut v = vec![words[1].clone(), words[0].clone()];
         v.extend(words[2..].iter().cloned());

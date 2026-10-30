@@ -310,6 +310,21 @@ impl Dialog {
         s
     }
 
+    /// has a word been met in people's conversations?
+    pub fn knows(&self, w: &str) -> bool {
+        self.df.contains_key(w)
+    }
+
+    /// how alike two lines are: half their shared runs weighed by rarity (a cosine), half their resonance in meaning
+    pub fn alike(&self, a: &[String], b: &[String]) -> f32 {
+        let (qa, na) = self.known_runs(a);
+        let (qb, nb) = self.known_runs(b);
+        let shared: f32 = qa.iter().filter(|r| qb.contains(r)).map(|r| self.idf(r).powi(2)).sum();
+        let cos = if na * nb > 0.0 { shared / (na * nb) } else { 0.0 };
+        let m = self.meaning_state(a).sim(&self.meaning_state(b)).max(0.0);
+        0.5 * cos + 0.5 * m
+    }
+
     /// the act people most often answer this act with
     pub fn answer_act(&self, act: usize) -> usize {
         (0..4).max_by_key(|&i| self.act_after[act][i]).unwrap_or(0)

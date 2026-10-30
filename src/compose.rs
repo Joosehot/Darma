@@ -248,6 +248,17 @@ impl Composer {
         if na * nb == 0.0 { 0.0 } else { shared / (na * nb) }
     }
 
+    /// a feeling read in the line (not happiness, not none): what people most often answered such a feeling with
+    pub fn feeling_reply(&self, u: &Understanding, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
+        let r = u.read(line);
+        let e = EMOTIONS.iter().position(|x| *x == r.emotion).unwrap();
+        if e == 0 || EMOTIONS[e] == "happiness" {
+            return None;
+        }
+        let (s, n) = self.to_feeling[e].iter().find(|(s, _)| test(s).is_none())?;
+        Some((s.clone(), format!("I read {}; to it people most often answer this ({n} times)", r.emotion)))
+    }
+
     /// Darma's own question of what the speaker says they did (and to what), made by its grammar; None if the line
     /// holds no such clause or the grammar makes nothing of it
     pub fn own_question(&self, u: &Understanding, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {

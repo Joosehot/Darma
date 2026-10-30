@@ -172,7 +172,20 @@ pub struct Talk<'a> {
     pub me: crate::me::Me<'a>,
     /// its understanding of what a line does and feels, and its grammar (for sentences of its own)
     own: Option<(crate::understand::Understanding<'a>, crate::compose::Composer)>,
+    /// exchanges it has lived: what was said to it, and the answer it was taught or that was marked good (as Prim's
+    /// exchanges): its own answers, not strangers'
+    lived: Vec<(Vec<String>, String)>,
+    lived_log: std::fs::File,
 }
+
+/// how alike a line must be to a lived one for Darma to answer as it learned (set by hand)
+pub const LIVED_AT: f32 = 0.6;
+/// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
+/// people's answers used (set by hand)
+pub const SOCIAL_AT: f32 = 0.8;
+pub const SOCIAL_WORDS: usize = 5;
+/// what Darma says when it cannot answer by itself: it asks to be taught
+pub const TEACH_ME: &str = "I don't understand that yet. What should I say?";
 
 use crate::dialog::TALK_AT;
 
@@ -202,7 +215,16 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")) };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
+        // the exchanges lived before
+        if let Ok(s) = std::fs::read_to_string(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))) {
+            for l in s.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+                    let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    talk.lived.push((words_of(&g("line")), g("reply")));
+                }
+            }
+        }
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -313,29 +335,47 @@ impl<'a> Talk<'a> {
     }
 
     /// what people answered to the turn most like this one, if one is alike enough
+    pub fn lived_count(&self) -> usize {
+        self.lived.len()
+    }
+
+    /// living an exchange: what was said, and the answer Darma was taught (or that was marked good); kept
+    pub fn live(&mut self, line: &str, reply: &str) {
+        let w = words_of(line);
+        if w.is_empty() || reply.trim().is_empty() {
+            return;
+        }
+        self.lived.retain(|(x, _)| *x != w);
+        self.lived.push((w, reply.trim().to_string()));
+        use std::io::Write;
+        let _ = writeln!(self.lived_log, "{}", serde_json::json!({"line": line, "reply": reply.trim()}));
+    }
+
+    /// an answer from what Darma lived: the lived line most alike to this one, if alike enough
+    fn lived_reply(&self, w: &[String]) -> Option<Reply> {
+        let d = self.dialog.as_ref()?;
+        let (s, (l, reply)) = self.lived.iter().map(|x| (d.alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
+        (s >= LIVED_AT).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2})", l.join(" ")), kind: "lived", recall: String::new(), ask: String::new() })
+    }
+
+    /// what strangers' words may still say for Darma (as Raven for Prim): a social formula (a short line very like a
+    /// greeting, thanks or goodbye people said) answered as people answered it, or a feeling answered as people
+    /// answer that feeling. Nothing else
     fn talk(&mut self, w: &[String]) -> Option<Reply> {
-        let last = self.last.clone();
         let me = &self.me;
         let world = &self.core;
         let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
         let test = |ans: &str| me.names_a_stranger(ans, &known).or_else(|| me.contradicts(&words_of(ans)));
+        if let Some((u, c)) = self.own.as_ref() {
+            if let Some((ans, why)) = c.feeling_reply(u, w, &test) {
+                return Some(Reply { said: ans, why, kind: "feel", recall: String::new(), ask: String::new() });
+            }
+        }
+        let last = self.last.clone();
         let d = self.dialog.as_mut()?;
-        let found = d.reply_where(w, last.as_deref(), None, &test).filter(|x| x.2 >= crate::dialog::LOOSE_AT);
-        let Some((ans, matched, s, let_go)) = found else {
-            // nothing people said is like it: it asks back, as people most often did (the first of their questions
-            // back it did not ask just now)
-            let said_last = last.map(|l| l.join(" ")).unwrap_or_default();
-            let back = d.ask_back.iter().find(|b| words_of(b).join(" ") != said_last).cloned()?;
-            return Some(Reply { said: back, why: "nothing people said is like this; I ask, as people most often asked back".into(), kind: "talk", recall: String::new(), ask: String::new() });
-        };
-        let mut why = format!("people answered this to: \"{matched}\" ({s:.2})");
-        if s < TALK_AT {
-            why.push_str("; a loose match");
-        }
-        if !let_go.is_empty() {
-            why.push_str(&format!("; not as myself: {}", let_go.join("; ")));
-        }
-        Some(Reply { said: ans, why, kind: "talk", recall: String::new(), ask: String::new() })
+        let short = w.iter().filter(|x| d.knows(x)).count() <= SOCIAL_WORDS;
+        let (ans, matched, s, _) = d.reply_where(w, last.as_deref(), None, &test)?;
+        (short && s >= SOCIAL_AT).then(|| Reply { said: ans, why: format!("a social formula; people answered this to \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
     }
 
     pub fn line(&mut self, line: &str) -> Reply {
@@ -368,19 +408,19 @@ impl<'a> Talk<'a> {
             match self.core.answer_reasoned(&q, &self.copulas) {
                 (Some(a), _) => r(q.iter().map(|x| if crate::quantum::HOLES.contains(&x.as_str()) { a.clone() } else { x.clone() }).collect::<Vec<_>>().join(" "), "from what you told me of yourself".into(), "answer"),
                 // what the speaker is, only they can say: not as some person in a conversation answered
-                (None, _) => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
+                (None, _) => r("I don't know that about you yet.".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
             }
         } else if asked {
             match self.core.verify(&q) {
-                Some((_, z)) if z >= 3.0 => r("kyllä".into(), format!("you told me: {}", q.join(" ")), "yes"),
-                Some(_) => r("ei sen mukaan mitä tiedän sinusta".into(), format!("you have not told me: {}", q.join(" ")), "no"),
-                None => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
+                Some((_, z)) if z >= 3.0 => r("Yes.".into(), format!("you told me: {}", q.join(" ")), "yes"),
+                Some(_) => r("Not as far as I know.".into(), format!("you have not told me: {}", q.join(" ")), "no"),
+                None => r("I don't know that about you yet.".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
             }
         } else {
             // what the speaker says of themselves begins where "i" or "my" begins ("hello darma, I am Joose": "i am
             // joose"); without it ("tell me a joke") it is only talk
             let Some(k) = w.iter().position(|x| x == "i" || x == "my") else {
-                return self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it".into(), "unknown"));
+                return self.talk(w).unwrap_or_else(|| r(TEACH_ME.into(), "nothing people said to this is like it".into(), "unknown"));
             };
             let s = crate::me::to_you(&w[k..]);
             let i = self.said.len();
@@ -394,6 +434,10 @@ impl<'a> Talk<'a> {
                 let world = &self.core;
                 let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
                 let test = |a: &str| me.names_a_stranger(a, &known).or_else(|| me.contradicts(&words_of(a)));
+                // a feeling first (sadness, anger, fear...): answered as people answer that feeling
+                if let Some((a, why)) = c.feeling_reply(u, w, &test) {
+                    return Reply { said: a, why: format!("{why}; I keep of you: {}", s.join(" ")), kind: "feel", recall: String::new(), ask: String::new() };
+                }
                 if let Some((q, why)) = c.own_question(u, w, &test) {
                     return Reply { said: q, why: format!("{why}; I keep of you: {}", s.join(" ")), kind: "own", recall: String::new(), ask: String::new() };
                 }
@@ -404,7 +448,7 @@ impl<'a> Talk<'a> {
                     t
                 }
                 None => {
-                    let mut rep = r("muistan sen sinusta".into(), s.join(" "), "told");
+                    let mut rep = r("I'll remember that about you.".into(), s.join(" "), "told");
                     rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
                     rep
                 }
@@ -425,18 +469,18 @@ impl<'a> Talk<'a> {
             let of_what_i_am = q.iter().any(|x| self.copulas.contains(x));
             match self.me.answer(&q, &self.copulas) {
                 Some(s) => r(s, "from what I know of myself".into(), "answer"),
-                None if !of_what_i_am => self.talk(w).unwrap_or_else(|| r("en tiedä sitä itsestäni".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown")),
-                None => r("en tiedä sitä itsestäni".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown"),
+                None if !of_what_i_am => self.talk(w).unwrap_or_else(|| r("I don't know that about myself yet.".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown")),
+                None => r("I don't know that about myself yet.".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown"),
             }
         } else if asked {
             // "are you ...": a question of what it is, answered from itself only; any other ("how are you?") is talk,
             // answered as people did, but never against what it knows of itself
             let of_what_i_am = w.first().is_some_and(|x| self.copulas.contains(x)) && self.yes_no(w);
             match self.me.verify(&q, &self.copulas) {
-                Some(true) => r("kyllä".into(), format!("I know of myself: {}", q.join(" ")), "yes"),
-                Some(false) if of_what_i_am => r("ei sen mukaan mitä tiedän itsestäni".into(), format!("I do not know this of myself: {}", q.join(" ")), "no"),
-                None if of_what_i_am => r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown"),
-                _ => self.talk(w).unwrap_or_else(|| r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown")),
+                Some(true) => r("Yes.".into(), format!("I know of myself: {}", q.join(" ")), "yes"),
+                Some(false) if of_what_i_am => r("Not as far as I know myself.".into(), format!("I do not know this of myself: {}", q.join(" ")), "no"),
+                None if of_what_i_am => r("I don't know that about myself yet.".into(), format!("nobody has told me: {}", q.join(" ")), "unknown"),
+                _ => self.talk(w).unwrap_or_else(|| r("I don't know that about myself yet.".into(), format!("nobody has told me: {}", q.join(" ")), "unknown")),
             }
         } else if matches!(w.first().map(|s| s.as_str()), Some("you" | "your")) {
             // said of Darma itself ("you are curious"): kept in its self; and it answers as people did, if that fits
@@ -447,11 +491,11 @@ impl<'a> Talk<'a> {
                     t.why = format!("{}; I keep of myself: {}", t.why, s.join(" "));
                     t
                 }
-                None => r("muistan sen itsestäni".into(), s.join(" "), "told"),
+                None => r("I'll remember that about myself.".into(), s.join(" "), "told"),
             }
         } else {
             // spoken to Darma, but not saying what it is ("how you doing", "thank you"): talk
-            self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it, and it does not say what I am".into(), "unknown"))
+            self.talk(w).unwrap_or_else(|| r(TEACH_ME.into(), "nothing people said to this is like it, and it does not say what I am".into(), "unknown"))
         }
     }
 
@@ -476,13 +520,16 @@ impl<'a> Talk<'a> {
                     self.learn(&q);
                     use std::io::Write;
                     let _ = writeln!(self.log, "{}", q.join(" "));
-                    let mut rep = r("kiitos, muistan sen", q.join(" "), "told");
+                    let mut rep = r("Thank you, I'll remember that.", q.join(" "), "told");
                     rep.recall = self.recall(&q, None).unwrap_or_default();
                     return rep;
                 }
-                Some("no") => return r("selvä", format!("not: {}", q.join(" ")), "told"),
+                Some("no") => return r("Okay.", format!("not: {}", q.join(" ")), "told"),
                 _ => {}
             }
+        }
+        if let Some(rep) = (!w.is_empty()).then(|| self.lived_reply(&w)).flatten() {
+            return rep;
         }
         if w.is_empty() {
             r("", String::new(), "none")
@@ -494,20 +541,20 @@ impl<'a> Talk<'a> {
             self.of_you(asked, &w)
         } else if self.asks(line, &w) && !hole && !self.yes_no(&w) {
             // a question people do not answer with yes or no ("how's it going?"): talk
-            self.talk(&w).unwrap_or_else(|| r("en ymmärrä", "nothing people said to this is like it".into(), "unknown"))
+            self.talk(&w).unwrap_or_else(|| r(TEACH_ME, "nothing people said to this is like it".into(), "unknown"))
         } else if self.asks(line, &w) && !hole {
             // what it was told answers first; if that cannot say, it answers as people did
             match self.core.verify_reasoned(&w, &self.copulas, 3.0) {
-                Some((true, why)) if why.is_empty() => r("kyllä", String::new(), "yes"),
-                Some((true, why)) => r("kyllä", format!("because {}", why.join("; ")), "yes"),
-                Some((false, _)) => self.talk(&w).unwrap_or_else(|| r("ei sen mukaan mitä tiedän", "I know these words, but not this of them".into(), "no")),
-                None => self.talk(&w).unwrap_or_else(|| r("en tiedä", "some of these words I was never told".into(), "unknown")),
+                Some((true, why)) if why.is_empty() => r("Yes.", String::new(), "yes"),
+                Some((true, why)) => r("Yes.", format!("because {}", why.join("; ")), "yes"),
+                Some((false, _)) => self.talk(&w).unwrap_or_else(|| r("Not as far as I know.", "I know these words, but not this of them".into(), "no")),
+                None => self.talk(&w).unwrap_or_else(|| r("I don't know.", "some of these words I was never told".into(), "unknown")),
             }
         } else if hole {
             match self.core.answer_reasoned(&w, &self.copulas) {
                 (Some(x), why) if why.is_empty() => r(&x, String::new(), "answer"),
                 (Some(x), why) => r(&x, format!("because {}", why.join("; ")), "answer"),
-                (None, _) => self.talk(&w).unwrap_or_else(|| r("en ymmärrä", "nothing I was told stands out as the answer".into(), "unknown")),
+                (None, _) => self.talk(&w).unwrap_or_else(|| r(TEACH_ME, "nothing I was told stands out as the answer".into(), "unknown")),
             }
         } else {
             let i = self.said.len();
@@ -519,7 +566,7 @@ impl<'a> Talk<'a> {
             let mut rep = match self.talk(&w) {
                 Some(t) => t,
                 None => {
-                    let mut rep = r("muistan", format!("{} things told", self.core.told), "told");
+                    let mut rep = r("I'll remember that.", format!("{} things told", self.core.told), "told");
                     rep.recall = self.recall(&w, Some(i)).unwrap_or_default();
                     rep
                 }
@@ -594,12 +641,26 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
             let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "recall": rep.recall, "ask": rep.ask, "told": talk.core.told});
             ("application/json", j.to_string())
         } else if head.starts_with("POST /rate") {
-            // a mark on an answer (sensible or not), kept for measuring: one line of JSON each
+            // a mark on an answer (sensible or not), kept for measuring: one line of JSON each; a good answer of
+            // Darma's own making is lived (it will answer so again)
             use std::io::Write as _;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("darma_ratings.jsonl") {
                 let _ = writeln!(f, "{}", body.trim().replace('\n', " "));
             }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+                let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if g("mark") == "good" && !matches!(g("kind").as_str(), "told" | "unknown" | "lived") {
+                    talk.live(&g("line"), &g("said"));
+                }
+            }
             ("application/json", "{}".to_string())
+        } else if head.starts_with("POST /teach") {
+            // taught: what Darma should have said to a line; lived
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+                let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                talk.live(&g("line"), &g("reply"));
+            }
+            ("application/json", serde_json::json!({"lived": talk.lived_count()}).to_string())
         } else if head.starts_with("GET /self") {
             ("application/json", serde_json::json!({"self": talk.me.all()}).to_string())
         } else if head.starts_with("GET /state") {
