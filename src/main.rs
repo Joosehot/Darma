@@ -1,7 +1,12 @@
 //! Darma v0: text -> understanding -> answer, a small measured trial of the core.
-//! Stage 1: the phase vectors (src/vector.rs). Stage 2: the data, read from downloaded human-annotated sets (src/data.rs, `darma prepare-data`).
+//! vector.rs phase vectors; data.rs the downloaded sets; lexicon.rs atoms; memory.rs lightning training; egg.rs the
+//! swim and the egg's three layers; eval.rs the measures and the baseline.
 
 mod data;
+mod egg;
+mod eval;
+mod lexicon;
+mod memory;
 mod vector;
 
 use clap::{Parser, Subcommand};
@@ -11,6 +16,11 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+    /// the dimension of every vector
+    #[arg(long, default_value_t = 1024, global = true)]
+    dim: usize,
+    #[arg(long, default_value_t = 2026, global = true)]
+    seed: u64,
 }
 
 #[derive(Subcommand)]
@@ -26,11 +36,16 @@ enum Cmd {
 }
 
 fn main() {
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    match cli.cmd {
         Cmd::PrepareData => data::prepare(std::path::Path::new("data")).expect("reading data/raw, writing data/"),
-        Cmd::Train | Cmd::Eval | Cmd::Ask { .. } => {
-            eprintln!("not built yet: stages 1-2 are done");
-            std::process::exit(2);
+        Cmd::Train => {
+            let d = eval::data();
+            let at = lexicon::Atoms::new(cli.dim, cli.seed);
+            let (m, s) = eval::train(&at, &d);
+            println!("one pass: {} clauses, {} sense sentences in {s:.2} s; {} senses with context; membrane {:.3}, fertilisation {:.3}", d.train.len(), d.senses_train.len(), m.contexts.len(), m.membrane, m.fertile);
         }
+        Cmd::Eval => eval::run(cli.dim, cli.seed),
+        Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
     }
 }
