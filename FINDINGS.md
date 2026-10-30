@@ -40,7 +40,7 @@ Järjestysherkkyydessä tila muuttuu selvästi, kun roolit vaihtuvat. Samankalta
 ## Mikä toimi
 
 - **Vektoriydin.** Sidonta, purku ja superpositio toimivat odotetusti. Purku palauttaa alkuperäisen samankaltaisuudella 1,000. Yhteen summaan mahtuu 100 roolisidosta, joista 97 luetaan oikein.
-- **Merkityksen valinta interferenssillä.** Darma voittaa yleisimmän merkityksen 14 sanassa 20:stä. Suurimmat erot ovat seal, 75 % vastaan 36 %, mole, 75 % vastaan 37 %, ja crane, 79 % vastaan 52 %. Vertailukohta voittaa vain sanoissa, joissa yksi merkitys on lähes ainoa: pitcher, jossa pelaaja on 100 % harjoitusdatasta, sekä bank, deck, pound ja digit.
+- **Merkityksen valinta interferenssillä.** Darma voittaa yleisimmän merkityksen 14 sanassa 20:stä. Suurimmat erot ovat seal, 75 % vastaan 36 %, mole, 75 % vastaan 37 %, ja crane, 79 % vastaan 52 %. Vertailukohta voittaa kuudessa sanassa, ja viidessä niistä yksi merkitys hallitsee harjoitusdataa: pitcher 100 %, bank 96 %, deck 89 %, pound 86 % ja yard 84 %. Kuudes on digit, jossa yleisin merkitys kattaa 69 % ja testilauseita on vain 42.
 - **Sanajärjestyksen oppiminen.** Järjestysnippu oppi yhdellä läpikäynnillä, että tekijä tulee ennen tekoa ja teko ennen kohdetta. Kun Darma saa pelkän klausuulin, roolit osuvat 94,8 %:ssa. Testi on helppo, koska vaihtoehtoja on kuusi, mutta se osoittaa järjestyksen kulkevan vektoreissa oikein.
 - **Nopeus.** Koulutus vei 2,3 sekuntia, eikä mitään optimoitu.
 
