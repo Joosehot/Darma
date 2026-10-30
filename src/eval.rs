@@ -84,6 +84,21 @@ pub fn run(dim: usize, seed: u64) {
         }
     }
     let n = by_sentence.len();
+    // where the right reading is lost: not among the sperm the egg sees (the swim), kept out (membrane), or passed
+    // over (another reading was accepted first at fertilisation)
+    let (mut in_top, mut gold_in, mut gold_unknown) = (0, 0, 0);
+    for (s, golds) in &by_sentence {
+        let words = tokens(s);
+        let sw = swim(&m, &at, &words);
+        let top: Vec<&[String; 3]> = sw.iter().take(crate::egg::TOP).map(|x| &x.fill).collect();
+        if let Some(g) = golds.iter().find(|g| top.contains(g)) {
+            in_top += 1;
+            let st = normalised(structure(&at, g));
+            gold_in += (m.structures.iter().map(|x| st.sim(&x.0)).fold(f32::MIN, f32::max) >= m.membrane) as usize;
+        }
+        gold_unknown += golds.iter().all(|g| (0..3).any(|r| !m.role_count[r].contains_key(&g[r]))) as usize;
+    }
+    println!("where the right reading is lost (n={n}): among the {} strongest sperm in {in_top}, of them through the membrane {gold_in}; sentences whose every marked clause has a word never seen in its role: {gold_unknown}", crate::egg::TOP);
 
     // clauses alone and their reversals (nonsense)
     let (mut clause_ok, mut nonsense_rejected, mut base_ns_rejected) = (0, 0, 0);
@@ -98,13 +113,19 @@ pub fn run(dim: usize, seed: u64) {
         clause_right += (a == Some(c.gold())) as usize;
         clause_known += c.gold().iter().enumerate().all(|(r, w)| m.role_count[r].contains_key(w)) as usize;
     }
+    let mut reread = 0;
     for s in &nonsense {
-        nonsense_rejected += understand(&m, &at, &d.lex, s).answer.is_none() as usize;
+        let ans = understand(&m, &at, &d.lex, s).answer;
+        nonsense_rejected += ans.is_none() as usize;
+        // accepted by reading it the other way round (the original clause back)?
+        let w = tokens(s);
+        reread += (ans == Some([w[2].clone(), w[1].clone(), w[0].clone()])) as usize;
         // the baseline rejects only when a word was never seen in the role its position gives
         let w = tokens(s);
         base_ns_rejected += (0..3).any(|r| !m.role_count[r].contains_key(&w[r])) as usize;
     }
 
+    println!("nonsense accepted as the original clause read backwards: {reread} of {}", nonsense.len());
     // order: the same three words, the roles swapped
     let mut order_sims = Vec::new();
     for c in &d.test {
