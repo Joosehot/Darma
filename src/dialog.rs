@@ -145,7 +145,13 @@ impl Dialog {
             .filter(|(i, _)| self.turns[*i].2.is_some() && !skip.contains(i))
             .collect();
         cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let topic: Option<&String> = q.iter().filter(|r| !r.contains(' ')).max_by(|a, b| self.idf(a).partial_cmp(&self.idf(b)).unwrap());
+        // the topic: the rarest known word, if it is rare at all (in fewer than one turn in a hundred: "dogs",
+        // "football"; not "know")
+        let topic: Option<&String> = q
+            .iter()
+            .filter(|r| !r.contains(' '))
+            .max_by(|a, b| self.idf(a).partial_cmp(&self.idf(b)).unwrap())
+            .filter(|r| self.idf(r) >= 100f32.ln());
         // the turns holding the topic are taken from all candidates (a long frame like "what do you think about"
         // would push them out of the best few hundred)
         let topical: Vec<(usize, f32)> = match topic {
