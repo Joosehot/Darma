@@ -163,6 +163,12 @@ pub fn chat(dim: usize, seed: u64, beta: f32, memory: &str, fresh: bool) {
     for line in &kept {
         core.tell(&words_of(line));
     }
+    // the copulas people marked in UD (seen at least 20 times): what says two things are the same
+    let copulas: Vec<String> = std::fs::read_to_string("data/copulas.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<std::collections::BTreeMap<String, usize>>(&s).ok())
+        .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
+        .unwrap_or_default();
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
     println!("Darma listens ({} things remembered from before, in {memory}). Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\") or end with ? (\"the dog chased the cat?\"). Empty line ends.", kept.len());
     for line in std::io::stdin().lines() {
@@ -172,21 +178,21 @@ pub fn chat(dim: usize, seed: u64, beta: f32, memory: &str, fresh: bool) {
             break;
         }
         if line.trim_end().ends_with('?') && !w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
-            match core.verify(&w) {
+            match core.verify_reasoned(&w, &copulas, 3.0) {
                 None => println!("Darma: en tiedä      (some of these words I was never told)"),
-                Some((f, z)) if z >= 3.0 => println!("Darma: kyllä      (fidelity {f:.2}, {z:.1} sd)"),
-                Some((f, z)) => println!("Darma: ei sen mukaan mitä tiedän      (fidelity {f:.2}, {z:.1} sd)"),
+                Some((true, why)) if why.is_empty() => println!("Darma: kyllä"),
+                Some((true, why)) => println!("Darma: kyllä      (because {})", why.join("; ")),
+                Some((false, _)) => println!("Darma: ei sen mukaan mitä tiedän"),
             }
         } else if w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
             // with few things told there is little noise to learn from: the winner must hold over half of the
             // question and stand out by half a match
             core.threshold = 0.5;
             core.fid_threshold = 3.0;
-            let (a, ms) = core.answer(&w, &core.candidates_for(&w));
-            let top: Vec<String> = ms.iter().take(3).map(|(c, f, z)| format!("{c} fidelity {f:.2} ({z:.1} sd)")).collect();
-            match a {
-                Some(x) => println!("Darma: {x}      (measured: {})", top.join(", ")),
-                None => println!("Darma: en ymmärrä      (measured: {})", top.join(", ")),
+            match core.answer_reasoned(&w, &copulas) {
+                (Some(x), why) if why.is_empty() => println!("Darma: {x}"),
+                (Some(x), why) => println!("Darma: {x}      (because {})", why.join("; ")),
+                (None, _) => println!("Darma: en ymmärrä"),
             }
         } else {
             core.tell(&w);

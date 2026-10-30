@@ -193,6 +193,19 @@ pub fn prepare(dir: &Path) -> std::io::Result<()> {
     let mut tg = tagged(&raw.join("ud/en_ewt-ud-train.conllu"));
     tg.extend(tagged(&raw.join("ud/en_ewt-ud-dev.conllu")));
     put("roles_train.json", serde_json::to_string(&tg).unwrap())?;
+    // the words people marked as copulas (the "is" of "Rex is a dog"), with how often: what Darma will take as
+    // saying that two things are the same
+    let mut cop: BTreeMap<String, usize> = BTreeMap::new();
+    for name in ["ud/en_ewt-ud-train.conllu", "ud/en_ewt-ud-dev.conllu"] {
+        for line in fs::read_to_string(raw.join(name)).unwrap().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 8 && f[7] == "cop" && f[1].chars().all(|c| c.is_alphabetic()) {
+                *cop.entry(f[1].to_lowercase()).or_default() += 1;
+            }
+        }
+    }
+    put("copulas.json", serde_json::to_string_pretty(&cop).unwrap())?;
+    println!("copulas marked in UD: {:?}", cop.iter().filter(|x| *x.1 >= 20).collect::<Vec<_>>());
     println!("role-marked training sentences (UD EWT train + dev): {}, {} words", tg.len(), tg.iter().map(|t| t.words.len()).sum::<usize>());
     put("train.json", serde_json::to_string_pretty(&train).unwrap())?;
     put("test.json", serde_json::to_string_pretty(&test).unwrap())?;

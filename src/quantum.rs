@@ -238,12 +238,79 @@ impl<'a> Core<'a> {
     /// an answer, or None: "en ymmärrä" (the winner does not stand out of the rest, or is itself no more than noise)
     pub fn answer(&self, words: &[String], candidates: &[String]) -> (Option<String>, Vec<(String, f32, f32)>) {
         let m = self.measure(words, candidates);
-        let a = (Self::peak(&m) >= self.threshold && m[0].2 >= self.fid_threshold).then(|| m[0].0.clone());
+        let a = (Self::peak(&m) >= self.threshold && m[0].2 >= self.fid_threshold).then(|| {
+            // of overlapping answers held about as well ("the" and "the fish"), the longer says more: it wins if it
+            // holds at least 90% of the winner's fidelity (a share set by hand)
+            let w = &m[0];
+            let ww: Vec<&str> = w.0.split(' ').collect();
+            m.iter()
+                .filter(|x| x.1 >= 0.9 * w.1 && x.0.split(' ').any(|p| ww.contains(&p)))
+                .max_by_key(|x| x.0.split(' ').count())
+                .map(|x| x.0.clone())
+                .unwrap_or_else(|| w.0.clone())
+        });
         (a, m)
     }
 }
 
 fn amp_unused() {}
+
+impl<'a> Core<'a> {
+    /// asking with one step of reasoning. If the question has no answer as it stands, each of its words is asked
+    /// what it is ("rex is what", through every copula people marked in UD) and, for each word of that answer, the
+    /// question is measured again with it in the word's place ("dog chased what"). Returns the answer and the facts
+    /// it stood on.
+    pub fn answer_reasoned(&self, words: &[String], copulas: &[String]) -> (Option<String>, Vec<String>) {
+        if let (Some(a), _) = self.answer(words, &self.candidates_for(words)) {
+            return (Some(a), Vec::new());
+        }
+        for (i, w) in words.iter().enumerate() {
+            if HOLES.contains(&w.as_str()) || copulas.contains(w) {
+                continue;
+            }
+            for c in copulas {
+                let q = vec![w.clone(), c.clone(), "what".to_string()];
+                let (Some(is), _) = self.answer(&q, &self.candidates_for(&q)) else { continue };
+                for x in is.split(' ') {
+                    if x == w {
+                        continue;
+                    }
+                    let mut q2 = words.to_vec();
+                    q2[i] = x.to_string();
+                    if let (Some(a), _) = self.answer(&q2, &self.candidates_for(&q2)) {
+                        return (Some(a), vec![format!("{w} {c} {is}")]);
+                    }
+                }
+            }
+        }
+        (None, Vec::new())
+    }
+
+    /// a yes/no question with the same one step of reasoning: (said yes, the fact it stood on if any)
+    pub fn verify_reasoned(&self, words: &[String], copulas: &[String], z_at: f32) -> Option<(bool, Vec<String>)> {
+        let direct = self.verify(words);
+        if direct.is_some_and(|x| x.1 >= z_at) {
+            return Some((true, Vec::new()));
+        }
+        for (i, w) in words.iter().enumerate() {
+            if copulas.contains(w) {
+                continue;
+            }
+            for c in copulas {
+                let q = vec![w.clone(), c.clone(), "what".to_string()];
+                let (Some(is), _) = self.answer(&q, &self.candidates_for(&q)) else { continue };
+                for x in is.split(' ').filter(|x| *x != w) {
+                    let mut q2 = words.to_vec();
+                    q2[i] = x.to_string();
+                    if self.verify(&q2).is_some_and(|y| y.1 >= z_at) {
+                        return Some((true, vec![format!("{w} {c} {is}")]));
+                    }
+                }
+            }
+        }
+        direct.map(|_| (false, Vec::new()))
+    }
+}
 
 /// the questions a clause (agent, action, patient) can answer: (question words, the answer)
 pub fn questions(g: &[String; 3]) -> [(Vec<String>, String); 2] {
