@@ -33,6 +33,8 @@ enum Cmd {
     Eval,
     /// the whole path for one sentence
     Ask { sentence: String },
+    /// why the egg does not work: each layer measured on its own
+    Diagnose,
     /// the words whose meanings are nearest to these words' meanings
     Near { words: Vec<String> },
 }
@@ -48,6 +50,7 @@ fn main() {
             println!("one pass: {} clauses, {} sense sentences in {s:.2} s; {} senses with context; membrane {:.3}, fertilisation {:.3}", d.train.len(), d.senses_train.len(), m.contexts.len(), m.membrane, m.fertile);
         }
         Cmd::Eval => eval::run(cli.dim, cli.seed),
+        Cmd::Diagnose => eval::diagnose(cli.dim, cli.seed),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {
             let d = eval::data();

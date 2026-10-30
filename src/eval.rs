@@ -252,3 +252,56 @@ pub fn ask(dim: usize, seed: u64, sentence: &str) {
         None => println!("en ymmärrä"),
     }
 }
+
+/// why the egg does not work: each layer measured on its own (`darma diagnose`)
+pub fn diagnose(dim: usize, seed: u64) {
+    let d = data();
+    let at = Atoms::new(dim, seed);
+    let (m, _) = train(&at, &d);
+    let minfit = |words: &[String], pos: [usize; 3]| -> (f32, [f32; 3]) {
+        let f = [0, 1, 2].map(|r| m.fitness(&at, words, pos[r])[r]);
+        (f[0].min(f[1]).min(f[2]), f)
+    };
+    // 1. membrane: the three words alone, the real reading and the reversed one
+    let (mut real_above, mut rev_above, mut real_wins, mut a_fits_a, mut p_fits_a) = (0, 0, 0, 0.0f32, 0.0f32);
+    for c in &d.test {
+        let w = tokens(&c.text);
+        let (r, fr) = minfit(&w, [0, 1, 2]);
+        let (v, _) = minfit(&w, [2, 1, 0]);
+        real_above += (r >= m.membrane) as usize;
+        rev_above += (v >= m.membrane) as usize;
+        real_wins += (r > v) as usize;
+        a_fits_a += fr[0];
+        p_fits_a += m.fitness(&at, &w, 2)[0];
+    }
+    let n = d.test.len() as f32;
+    println!("1. membrane (threshold {:.3}), the 77 test clauses' three words alone:", m.membrane);
+    println!("   real reading passes {real_above}, reversed passes {rev_above}; the real fits its roles better than the reversed in {real_wins}");
+    println!("   fitness as agent: of the real agent {:.3} on average, of the real patient {:.3}", a_fits_a / n, p_fits_a / n);
+    // how the threshold was set: chance = random readings (mostly words that are no role at all)
+    let mut chance_kinds = (0usize, 0usize);
+    for s in d.tagged.iter().filter(|s| s.words.len() >= 3).take(3000) {
+        let none = s.roles.iter().filter(|r| *r == "-").count();
+        chance_kinds.0 += none;
+        chance_kinds.1 += s.roles.len();
+    }
+    println!("   the threshold is set against random readings; {:.0}% of the words they draw play no role at all, so chance is mostly nonsense of another kind (\"of the in\")", 100.0 * chance_kinds.0 as f32 / chance_kinds.1 as f32);
+    // 2. fertilisation, on training clauses: memory keeping their own pairs vs leaving them out
+    let (mut inside_ok, mut loo_ok, mut k) = (0, 0, 0);
+    for (i, c) in d.train.iter().enumerate().take(300) {
+        let g = c.gold();
+        let w = tokens(&c.text);
+        let st = normalised(structure(&at, &g));
+        inside_ok += (m.read_back(&at, &st, &g, &w, None).1 > 0.0) as usize;
+        loo_ok += (m.read_back(&at, &st, &g, &w, Some(i)).1 > 0.0) as usize;
+        k += 1;
+    }
+    println!("2. fertilisation on {k} training clauses (three words alone): memory backs the real reading in {inside_ok} when it keeps their own pairs, in {loo_ok} when they are left out");
+    // 3. the measure itself: the reversed clauses
+    println!("3. the 30 reversed clauses used as nonsense:");
+    for c in d.test.iter().take(30) {
+        let g = c.gold();
+        print!("   {} {} {} |", g[2], g[1], g[0]);
+    }
+    println!();
+}

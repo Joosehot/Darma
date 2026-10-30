@@ -115,3 +115,31 @@ Hedelmöitys on nyt testi siitä, onko luenta ristiriidassa ytimen tiedon kanssa
 Kynnys on negatiivinen, koska muisti suosii oikeissakin harjoitusklausuuleissa usein jotain muuta sanaa kuin oikeaa. Siksi testi päästää lähes kaiken läpi, ja järjettömistä hylätään yhä 13,3 %.
 
 Hedelmöitys on nyt oikea mittari. Se kertoo, ettei muistin tieto vielä riitä erottamaan järkevää järjettömästä. Seuraava askel on siksi muistin vahvistaminen eikä hedelmöityksen muuttaminen. Tarvitaan enemmän tekstiä merkityksiin, esimerkiksi koko WikiText-103:n 100 miljoonaa sanaa, ja enemmän merkittyjä tekijä–teko–kohde-pareja.
+
+## Miksi munasolu ei toimi: kerroksittainen diagnoosi
+
+Komento `cargo run --release -- diagnose` mittaa kerrokset erikseen.
+
+**1. Kalvo katsoo sanoja yksi kerrallaan, joten se ei näe roolien vaihtoa.**
+
+| Mittaus, testiklausuulien kolme sanaa ilman lausetta | Tulos |
+|---|---|
+| Oikea luenta läpäisee kalvon | 50 / 77 |
+| Käännetty luenta läpäisee kalvon | 41 / 77 |
+| Oikea luenta sopii rooleihinsa paremmin kuin käännetty | 38 / 77, eli sattuman tasolla |
+| Oikean tekijän sopivuus tekijäksi, keskimäärin | 0,141 |
+| Oikean kohteen sopivuus tekijäksi, keskimäärin | 0,089 |
+
+Sama substantiivi on usein sekä tekijä että kohde, joten sanan roolikelpoisuus ei kerro, kumpi on kumpi. Lisäksi kalvon kynnys opittiin satunnaisista luennoista, ja niissä 87 % sanoista ei ole minkään roolin sanoja. Kynnys erottaa siis hölynpölyn tyyliin "of the in" mutta ei roolien vaihtoa. Roolien vaihdon havaitseminen vaatii tietoa sanapareista, eli siitä, kuka tekee mitä. Se on hedelmöityksen tehtävä, ei kalvon.
+
+**2. Hedelmöityksen mekanismi toimii, mutta se ei yleisty.**
+
+Mittaus tehtiin 300 harjoitusklausuulilla, kolmella sanalla ilman lausetta. Muisti tukee oikeaa luentaa:
+- 251 / 300, eli 84 %, kun muisti saa pitää klausuulien omat parit;
+- 120 / 300, eli 40 %, kun ne poistetaan muistista.
+
+Kun muisti on nähnyt parin, ristiriitatesti toimii. Kun pari on uusi, merkitysvektoreiden kautta tuleva yleistys ei kanna. Testidatan sanapareista muisti tuntee vain 5–6 / 77. Pullonkaula on siis tieto siitä, kuka tekee mitä, eikä hedelmöityksen rakenne.
+
+**3. Mittarissa on pieni virhe.** Osa käännetyistä klausuuleista ei ole järjettömiä, esimerkiksi "money mean gifts" ja "case makes hubris". Valtaosa on kuitenkin järjettömiä, kuten "massacre condemn people", "talks demanded clerics" ja "slogans chanted crowds". Virhe on pieni verrattuna kalvon ja hedelmöityksen ongelmiin.
+
+**Johtopäätös:** munasolu tarvitsee laajan muistin siitä, kuka tekee mitä kenelle. Ihmisten merkitsemiä pareja on vain noin 14 000 lauseesta, mikä on liian vähän. Lähin keino on, että Darma lukee itse merkitsemätöntä tekstiä, kuten WikiTextiä, ja painaa muistiin ne klausuulit, joista se on varma. Darma oppisi siis lukemalla. Silloin uusien parien kattavuus voisi nousta harjoitusdatan tasolle, jolla hedelmöitys jo toimii, 84 %:iin.
