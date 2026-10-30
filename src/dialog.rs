@@ -1,6 +1,9 @@
 //! Conversation from people's conversations (DailyDialog, CC BY-NC-SA 4.0, 13,118 everyday dialogues).
 //!
-//! Every turn is kept together with the turn that answered it. What is said to Darma is measured against every kept
+//! Every turn is kept together with the turn that answered it, and is matched sentence by sentence: what is said to
+//! Darma is matched to one sentence of a person's turn. If that sentence ended the turn, Darma answers with what the
+//! next person answered; if the person went on, Darma goes on as they did ("Hello, darling!" -> "Did you have a good
+//! day today?", not the answer to that question). What is said to Darma is measured against every kept
 //! turn: their shared runs of one to three words, each weighed by how rare it is among the turns (log N/df), the
 //! overlap normalised by both lengths (a cosine). This is the overlap of the two sentences' states in the core, with
 //! rarer runs counting more; it is computed with an index of runs rather than with the vectors, which for 87,000
@@ -31,10 +34,31 @@ pub struct Dialog {
     yes_no: HashMap<String, (u32, u32)>,
     /// what people most often answered with a question of their own (what they say when they need more to go on)
     pub ask_back: Vec<String>,
+    /// every sentence of every turn: its words, its text, the turn it is in, and whether it ends that turn
+    units: Vec<(Vec<String>, String, usize, bool)>,
+    /// the sentence before each sentence in its dialogue
+    unit_prev: Vec<Option<usize>>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
     recent: Vec<usize>,
+}
+
+/// a turn's sentences (DailyDialog spaces its marks: "Hello , darling ! Did you ...?")
+fn sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for tok in text.split_whitespace() {
+        cur.push(tok);
+        if matches!(tok, "." | "!" | "?") || tok.ends_with(['!', '?']) {
+            out.push(cur.join(" "));
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur.join(" "));
+    }
+    out.into_iter().filter(|s| !tokens(s).is_empty()).collect()
 }
 
 fn runs(w: &[String]) -> Vec<String> {
@@ -106,27 +130,55 @@ impl Dialog {
         let mut ask_back: Vec<(String, u32)> = back.into_iter().collect();
         ask_back.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let ask_back: Vec<String> = ask_back.into_iter().take(8).map(|x| x.0).collect();
+        // the sentences, each with the turn it is in and whether it ends it
+        let mut units: Vec<(Vec<String>, String, usize, bool)> = Vec::new();
+        let mut unit_prev: Vec<Option<usize>> = Vec::new();
+        for (ti, (_, text, _)) in turns.iter().enumerate() {
+            let ss = sentences(text);
+            let first_of_dialogue = prev[ti].is_none();
+            for (k, s) in ss.iter().enumerate() {
+                let up = if k == 0 && first_of_dialogue { None } else { units.len().checked_sub(1) };
+                unit_prev.push(up);
+                units.push((tokens(s), s.clone(), ti, k + 1 == ss.len()));
+            }
+        }
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         let mut df: HashMap<String, u32> = HashMap::new();
-        for (i, (w, _, _)) in turns.iter().enumerate() {
+        for (i, (w, _, _, _)) in units.iter().enumerate() {
             for r in runs(w) {
                 *df.entry(r.clone()).or_default() += 1;
                 index.entry(r).or_default().push(i as u32);
             }
         }
-        let n = turns.len() as f32;
+        let n = units.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
-        let norm = turns.iter().map(|(w, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, prev, openers, yes_no, ask_back, index, df, norm, recent: Vec::new() })
+        let norm = units.iter().map(|(w, _, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
+        Some(Dialog { turns, prev, openers, yes_no, ask_back, units, unit_prev, index, df, norm, recent: Vec::new() })
     }
 
     fn idf(&self, r: &str) -> f32 {
-        (self.turns.len() as f32 / *self.df.get(r).unwrap_or(&1) as f32).ln()
+        (self.units.len() as f32 / *self.df.get(r).unwrap_or(&1) as f32).ln()
+    }
+
+    /// what follows a sentence: the rest of its turn if the person went on, else the next person's turn
+    fn follows(&self, u: usize) -> Option<String> {
+        let (_, _, ti, last) = &self.units[u];
+        if *last {
+            self.turns[*ti].2.map(|n| tidy(&self.turns[n].1))
+        } else {
+            let rest: Vec<&str> = self.units[u + 1..].iter().take_while(|x| x.2 == *ti).map(|x| x.1.as_str()).collect();
+            Some(tidy(&rest.join(" ")))
+        }
+    }
+
+    fn has_follow(&self, u: usize) -> bool {
+        let (_, _, ti, last) = &self.units[u];
+        !*last || self.turns[*ti].2.is_some()
     }
 
     /// how alike a sentence's runs (known ones, with their norm) are to kept turn i (cosine)
     fn cos_to(&self, q: &[String], qn: f32, i: usize) -> f32 {
-        let tr = runs(&self.turns[i].0);
+        let tr = runs(&self.units[i].0);
         q.iter().filter(|r| tr.binary_search(r).is_ok()).map(|r| self.idf(r).powi(2)).sum::<f32>() / (qn * self.norm[i])
     }
 
@@ -149,7 +201,7 @@ impl Dialog {
             let Some(ids) = self.index.get(r) else { continue };
             let w = self.idf(r).powi(2);
             // a run every tenth turn has says little and costs much: left out of the sum
-            if ids.len() > self.turns.len() / 10 {
+            if ids.len() > self.units.len() / 10 {
                 continue;
             }
             for &i in ids {
@@ -159,7 +211,7 @@ impl Dialog {
         let mut cands: Vec<(usize, f32)> = score
             .into_iter()
             .map(|(i, s)| (i as usize, s / (qn * self.norm[i as usize])))
-            .filter(|(i, _)| self.turns[*i].2.is_some() && !skip.contains(i))
+            .filter(|(i, _)| self.has_follow(*i) && !skip.contains(i))
             .collect();
         cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         // the topic: the rarest known word, if it is rare at all (in fewer than one turn in a hundred: "dogs",
@@ -172,24 +224,31 @@ impl Dialog {
         // the turns holding the topic are taken from all candidates (a long frame like "what do you think about"
         // would push them out of the best few hundred)
         let topical: Vec<(usize, f32)> = match topic {
-            Some(tw) => cands.iter().filter(|(i, _)| self.turns[*i].0.contains(tw)).take(300).cloned().collect(),
+            Some(tw) => cands.iter().filter(|(i, _)| self.units[*i].0.contains(tw)).take(300).cloned().collect(),
             None => Vec::new(),
         };
         cands.truncate(300);
         let ctx = context.map(|c| self.known_runs(c));
         let total = |&(i, s): &(usize, f32)| -> f32 {
-            let c = match (&ctx, self.prev[i]) {
+            let c = match (&ctx, self.unit_prev[i]) {
                 (Some((cq, cn)), Some(p)) => CONTEXT * self.cos_to(cq, *cn, p),
                 _ => 0.0,
             };
             s + c
         };
-        // of turns alike as much, the one with least besides (its whole text shortest: "Hello." before a phone
-        // number read out)
         let pick = |set: Vec<&(usize, f32)>| -> Option<(usize, f32)> {
             set.into_iter()
                 .map(|x| (x.0, x.1, total(x)))
-                .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap().then(self.turns[b.0].1.len().cmp(&self.turns[a.0].1.len())).then(b.0.cmp(&a.0)))
+                // of equally alike: a sentence someone else answered before one its speaker went on from; then the
+                // shortest answer; then the shortest sentence
+                .max_by(|a, b| {
+                    a.2.partial_cmp(&b.2)
+                        .unwrap()
+                        .then(self.units[a.0].3.cmp(&self.units[b.0].3))
+                        .then(self.follows(b.0).map_or(0, |s| s.len()).cmp(&self.follows(a.0).map_or(0, |s| s.len())))
+                        .then(self.units[b.0].1.len().cmp(&self.units[a.0].1.len()))
+                        .then(b.0.cmp(&a.0))
+                })
                 .map(|x| (x.0, x.1))
         };
         if let Some(b) = pick(topical.iter().collect()).filter(|b| b.1 >= TALK_AT) {
@@ -203,12 +262,12 @@ impl Dialog {
     pub fn reply(&mut self, words: &[String], context: Option<&[String]>) -> Option<(String, String, f32)> {
         let recent = self.recent.clone();
         let (i, s) = self.nearest(words, context, &recent)?;
-        let next = self.turns[i].2?;
+        let ans = self.follows(i)?;
         self.recent.push(i);
         if self.recent.len() > 8 {
             self.recent.remove(0);
         }
-        Some((tidy(&self.turns[next].1), tidy(&self.turns[i].1), s))
+        Some((ans, tidy(&self.units[i].1), s))
     }
 
     /// the best answer that passes `test` (None: passes; Some(reason): let go), trying up to ten turns in order of
@@ -218,15 +277,14 @@ impl Dialog {
         let mut let_go = Vec::new();
         for _ in 0..10 {
             let (i, s) = self.nearest(words, context, &skip)?;
-            let next = self.turns[i].2?;
-            let ans = tidy(&self.turns[next].1);
+            let ans = self.follows(i)?;
             match test(&ans) {
                 None => {
                     self.recent.push(i);
                     if self.recent.len() > 8 {
                         self.recent.remove(0);
                     }
-                    return Some((ans, tidy(&self.turns[i].1), s, let_go));
+                    return Some((ans, tidy(&self.units[i].1), s, let_go));
                 }
                 Some(why) => {
                     let_go.push(format!("\"{ans}\" ({why})"));
