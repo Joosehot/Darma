@@ -192,3 +192,45 @@ Omistajan neljä riviä ovat nyt ytimen rakenne. Toteutus on tiedostoissa `src/q
 4. **Merkitysvektorit eivät auta tässä ytimessä.** Niiden kanssa oikein meni 93,9 %, ilman niitä 95,1 %. Ne tekevät sanoista toistensa kaltaisia, ja kohina lisääntyy.
 
 Keskustelun voi käynnistää komennolla `cargo run --release -- chat`.
+
+## Ytimen jatkokehitys
+
+| Muutos | Klausuulikoe: kerrotut oikein / väärin päin vastasi | Nopeus |
+|---|---|---|
+| Lähtötilanne | 95,1 % / 4,0 % | 14 ms |
+| Mittaus vain sanoista, jotka kerrottiin kysymyksen sanojen kanssa, ja z-raja opittuna väärin päin kysytyistä harjoituskysymyksistä | 95,0 % / 4,5 % | 33 µs |
+| Mitataan vain rekistereissä, jotka erottavat täyden osuman kohinasta, kolmen keskihajonnan sääntö | 96,0 % / 3,6 % | 32 µs |
+| Jonot 5 sanaan asti | 96,0 % / 5,1 % | 40 µs |
+
+Väärin päin kysytyt mitataan parittomilla faktoilla. Raja opitaan parillisilla.
+
+**Kyllä/ei-kysymykset.** Väite mitataan kokonaan, ja "kyllä" vaatii, että jokainen väitteen jono on muistissa.
+
+| Väite | "Kyllä" |
+|---|---|
+| Kerrottu | 98,7 % |
+| Väärin päin esitetty | 5,3 % |
+| Kertomaton | 0 % |
+
+**Päättely yhden askeleen yli.** Darma oppi UD:n merkinnöistä, mitkä sanat ovat yhdistäviä verbejä: am, are, be, been, being, is, 's, was ja were. Jos suora mittaus ei anna vastausta, Darma kysyy, mikä kysymyksen sana on, ja mittaa uudelleen vastaus sanan paikalla. Esimerkiksi "rex chased what" antaa vastauksen "the cat", koska rex is a dog.
+
+**Muisti säilyy keskustelusta toiseen.** Kerrotut lauseet tallentuvat tiedostoon darma_memory.txt, ja ne kerrotaan uudelleen käynnistyksessä.
+
+**Mittakaavakoe, `qa-sentences`.** Darmalle kerrottiin kaikki 14 449 UD-lausetta, noin 200 000 sanaa, 4–44 sekunnissa. Kysymykset tehtiin lauseiden omista sanoista, esimerkiksi "who killed a member".
+
+| Asetus | Oikein | Väärin | Kertomattomiin vastasi |
+|---|---|---|---|
+| D 1 024, jonot 3 | 3,2 % | 0,4 % | 0 % |
+| D 1 024, jonot 3, vain erottelukykyiset rekisterit | 31,8 % | 0 % | 0,8 % |
+| D 4 096, jonot 3 | 38,0 % | 0,2 % | 2,5 % |
+| D 16 384, jonot 3 | 29,4 % | 0 % | 0,8 % |
+| D 4 096, jonot 4 | 53,2 % | 0,2 % | 0,8 % |
+| D 4 096, jonot 5 | 58,2 % | 0,2 % | 1,7 % |
+
+Ydin melkein ei koskaan vastaa väärin. Kun se ei ole varma, se sanoo "en ymmärrä". Kaksi asiaa rajoittaa sitä:
+- **Rekisterin kapasiteetti.** Rekisteri erottaa osuman vain, jos sana esiintyy enintään noin 2D/9 jonossa. Dimensiolla 4 096 se tarkoittaa noin 20 lausetta sanaa kohti.
+- **Kysymyksen ulottuvuus.** Pidemmät jonot tavoittavat kauempana olevat sanat.
+
+Isompi dimensio ei yksin auta. Kun rekisterit tarkentuvat, myös aidot osittaiset osumat erottuvat, ja opittu raja nousee.
+
+**Yksikkötestit:** 11 testiä menee läpi, vektoreille ja ytimelle.

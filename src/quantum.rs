@@ -19,7 +19,7 @@ use crate::vector::HVec;
 use num_complex::Complex32;
 use std::collections::HashMap;
 
-pub const RUN: usize = 3;
+pub const RUN: usize = 5;
 pub const HOLES: [&str; 2] = ["who", "what"];
 
 pub struct Core<'a> {
