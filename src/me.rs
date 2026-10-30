@@ -19,7 +19,8 @@ use crate::lexicon::Atoms;
 use crate::quantum::{Core, HOLES};
 use std::collections::HashMap;
 
-pub const BORN: [&str; 3] = ["i am darma", "my name is darma", "i am a program"];
+/// what is true of Darma by its making, in the words it says them (a hyphen or capitals kept for saying)
+pub const BORN: [&str; 5] = ["i am darma", "my name is darma", "i am a program", "i am a resonant quantum-spirited model", "i am an RQ-SM"];
 const COPULAS: [&str; 7] = ["is", "are", "am", "was", "were", "be", "been"];
 
 fn w(s: &str) -> Vec<String> {
@@ -130,6 +131,8 @@ pub struct Me<'a> {
     /// what it knows of itself, as sentences (for showing), with what happens to it under its kind
     pub known: Vec<String>,
     happened: HashMap<&'static str, Vec<String>>,
+    /// how words of its birth are written when it says them ("quantum spirited" -> "quantum-spirited")
+    spelled: Vec<(String, String)>,
     log: std::fs::File,
 }
 
@@ -142,16 +145,24 @@ impl<'a> Me<'a> {
             let _ = std::fs::remove_file(path);
         }
         let mut known = Vec::new();
+        let mut spelled = Vec::new();
         for s in BORN {
-            core.tell(&w(s));
-            known.push(s.to_string());
+            let ws = crate::lexicon::tokens(s);
+            core.tell(&ws);
+            known.push(ws.join(" "));
+            for raw in s.split(' ') {
+                let pieces = crate::lexicon::tokens(raw);
+                if pieces.len() > 1 || raw.chars().any(|c| c.is_uppercase()) {
+                    spelled.push((pieces.join(" "), raw.to_string()));
+                }
+            }
         }
         for s in std::fs::read_to_string(path).map(|s| s.lines().map(String::from).collect::<Vec<_>>()).unwrap_or_default() {
             core.tell(&w(&s));
             known.push(s);
         }
         let log = std::fs::OpenOptions::new().create(true).append(true).open(path).expect("self file");
-        Me { core, known, happened: HashMap::new(), log }
+        Me { core, known, happened: HashMap::new(), spelled, log }
     }
 
     /// told of itself (already turned to "i"): kept for good
@@ -197,12 +208,18 @@ impl<'a> Me<'a> {
                 fills.push(c.clone());
             }
         }
-        // of overlapping fills ("a program", "program") the longest
-        let keep: Vec<String> = fills.iter().filter(|f| !fills.iter().any(|g| g != *f && g.contains(f.as_str()))).cloned().collect();
+        // of overlapping fills ("a program", "program") the longest, in the order it came to know them
+        let mut keep: Vec<String> = fills.iter().filter(|f| !fills.iter().any(|g| g != *f && g.contains(f.as_str()))).cloned().collect();
         if keep.is_empty() {
             return None;
         }
-        Some(q.iter().map(|x| if HOLES.contains(&x.as_str()) { keep.join(", ") } else { x.clone() }).collect::<Vec<_>>().join(" "))
+        let first_known = |f: &String| self.all().iter().position(|k| format!(" {k} ").contains(&format!(" {f} "))).unwrap_or(usize::MAX);
+        keep.sort_by_key(|f| first_known(f));
+        let mut said = q.iter().map(|x| if HOLES.contains(&x.as_str()) { keep.join(", ") } else { x.clone() }).collect::<Vec<_>>().join(" ");
+        for (plain, written) in &self.spelled {
+            said = said.replace(plain.as_str(), written);
+        }
+        Some(said)
     }
 
     /// a yes/no question about itself: Some(true/false) when it knows these words of itself, None when it does not
