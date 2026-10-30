@@ -32,15 +32,21 @@ pub struct Core<'a> {
     pub psi: HVec,
     /// the key register: everything told, entangled with each of its words (sum over w of |w> (x) psi_w); measuring
     /// the register on a word of the question collapses memory to what was told with that word
-    pub reg: HashMap<String, (HVec, usize)>,
+    pub reg: HashMap<String, (HVec, usize, usize)>,
+    /// the basis each register can be measured in: what was told together with the word (single words and runs of
+    /// two), with how many times
+    pub with: HashMap<String, HashMap<String, i64>>,
     pub told: usize,
     /// how far a measurement's winner must stand out of the runner-up to be an answer (learned from untold questions)
     pub threshold: f32,
+    /// how many noise deviations the winner's own fidelity must stand above zero in its register (learned the same
+    /// way; a register holding m runs has noise of about sqrt(m / 2D) on one run's fidelity)
+    pub fid_threshold: f32,
 }
 
 impl<'a> Core<'a> {
     pub fn new(at: &'a Atoms, meaning: Option<&'a Memory>, beta: f32) -> Self {
-        Core { at, meaning, beta, vacuum: at.get("vacuum"), ops: Default::default(), psi: HVec::zero(at.d), reg: HashMap::new(), told: 0, threshold: 0.0 }
+        Core { at, meaning, beta, vacuum: at.get("vacuum"), ops: Default::default(), psi: HVec::zero(at.d), reg: HashMap::new(), with: HashMap::new(), told: 0, threshold: 0.0, fid_threshold: 0.0 }
     }
 
     /// a word as an operator: unit phases (its atom's, turned towards its meaning by beta)
@@ -95,22 +101,43 @@ impl<'a> Core<'a> {
 
     fn told_as(&mut self, words: &[String], sign: f32) {
         let s = self.state(words, None);
+        let nruns: usize = (1..=RUN).map(|n| words.len().saturating_sub(n - 1)).sum();
         self.psi.add_scaled(&s, sign);
         let mut u: Vec<&String> = words.iter().collect();
         u.sort();
         u.dedup();
         let d = self.at.d;
+        let mut fills: Vec<String> = words.to_vec();
+        fills.extend(words.windows(2).map(|p| p.join(" ")));
         for w in u {
-            let e = self.reg.entry(w.clone()).or_insert_with(|| (HVec::zero(d), 0));
+            let e = self.reg.entry(w.clone()).or_insert_with(|| (HVec::zero(d), 0, 0));
             e.0.add_scaled(&s, sign);
             e.1 = (e.1 as i64 + sign as i64) as usize;
+            e.2 = (e.2 as i64 + sign as i64 * nruns as i64) as usize;
+            let b = self.with.entry(w.clone()).or_default();
+            for f in &fills {
+                let c = b.entry(f.clone()).or_default();
+                *c += sign as i64;
+                if *c <= 0 {
+                    b.remove(f);
+                }
+            }
         }
+    }
+
+    /// the candidates a question can be measured on: what was told together with every word of the question
+    pub fn candidates_for(&self, words: &[String]) -> Vec<String> {
+        let keys: Vec<&String> = words.iter().filter(|w| !HOLES.contains(&w.as_str())).collect();
+        let Some(first) = keys.iter().filter_map(|w| self.with.get(*w)).min_by_key(|b| b.len()) else { return Vec::new() };
+        let mut c: Vec<String> = first.keys().filter(|f| keys.iter().all(|w| self.with.get(*w).is_some_and(|b| b.contains_key(*f)))).cloned().collect();
+        c.sort();
+        c
     }
 
     /// the registers to measure in: one per word of the question. An answer was told together with every one of
     /// them, so it must show in each; a word never told means memory cannot answer (None)
-    fn collapse(&self, words: &[String]) -> Option<Vec<&HVec>> {
-        words.iter().filter(|w| !HOLES.contains(&w.as_str())).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| &r.0)).collect()
+    fn collapse(&self, words: &[String]) -> Option<Vec<(&HVec, usize)>> {
+        words.iter().filter(|w| !HOLES.contains(&w.as_str())).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| (&r.0, r.2))).collect()
     }
 
     /// asking: the hole (who / what) is filled by each candidate in turn, and memory is measured against the runs of
@@ -118,8 +145,9 @@ impl<'a> Core<'a> {
     ///   fidelity: for each run of the question that holds the hole, the in-phase part of memory's overlap with it
     ///             over a full match, at most 1; their mean. About 1 when memory holds the whole question so filled,
     ///             1/2 when it holds half of its runs, 0 when nothing fits (random phases cancel). This decides.
-    ///   probability: the overlaps' squares, normalised over the candidates (Born's rule), shown alongside.
-    /// Returns (candidate, fidelity, probability), the highest fidelity first.
+    ///   standing: the fidelity in noise deviations of its register (the least over the registers): how far the
+    ///             candidate stands above what random phases give there.
+    /// Returns (candidate, fidelity, standing), the highest fidelity first.
     pub fn measure(&self, words: &[String], candidates: &[String]) -> Vec<(String, f32, f32)> {
         let Some(h) = words.iter().position(|w| HOLES.contains(&w.as_str())) else { return Vec::new() };
         // memory knows nothing told with any word of the question: nothing to measure
@@ -150,22 +178,23 @@ impl<'a> Core<'a> {
             }
             // in each register: the mean over runs of the in-phase overlap (at most 1); the answer's fidelity is the
             // least over the registers
-            let (mut fid, mut amp) = (f32::MAX, Complex32::new(0.0, 0.0));
-            for psi in &regs {
+            let (mut fid, mut z, mut amp) = (f32::MAX, f32::MAX, Complex32::new(0.0, 0.0));
+            for (psi, m) in &regs {
                 let mut f = 0.0f32;
                 for r in &runs {
                     let a = psi.inner(r);
                     f += (a.re / self.at.d as f32).clamp(0.0, 1.0);
                     amp += a;
                 }
-                fid = fid.min(f / runs.len().max(1) as f32);
+                let f = f / runs.len().max(1) as f32;
+                // the noise this register gives the mean fidelity over the runs
+                let sigma = ((*m as f32) / (2.0 * self.at.d as f32) / runs.len().max(1) as f32).sqrt().max(1e-6);
+                fid = fid.min(f);
+                z = z.min(f / sigma);
             }
-            out.push((c.clone(), fid, amp.norm_sqr()));
+            out.push((c.clone(), fid, z));
         }
-        let total: f32 = out.iter().map(|x| x.2).sum::<f32>().max(1e-12);
-        for x in out.iter_mut() {
-            x.2 /= total;
-        }
+        let _ = amp_unused();
         out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         out
     }
@@ -180,13 +209,15 @@ impl<'a> Core<'a> {
         a.1 - b
     }
 
-    /// an answer, or None: "en ymmärrä" (the winner does not stand out of the rest by the learned threshold)
+    /// an answer, or None: "en ymmärrä" (the winner does not stand out of the rest, or is itself no more than noise)
     pub fn answer(&self, words: &[String], candidates: &[String]) -> (Option<String>, Vec<(String, f32, f32)>) {
         let m = self.measure(words, candidates);
-        let a = (Self::peak(&m) >= self.threshold).then(|| m[0].0.clone());
+        let a = (Self::peak(&m) >= self.threshold && m[0].2 >= self.fid_threshold).then(|| m[0].0.clone());
         (a, m)
     }
 }
+
+fn amp_unused() {}
 
 /// the questions a clause (agent, action, patient) can answer: (question words, the answer)
 pub fn questions(g: &[String; 3]) -> [(Vec<String>, String); 2] {
