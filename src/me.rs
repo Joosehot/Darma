@@ -223,8 +223,9 @@ impl<'a> Me<'a> {
     }
 
     /// a yes/no question about itself: Some(true/false) when it knows these words of itself, None when it does not
-    pub fn verify(&self, q: &[String], copulas: &[String]) -> Option<bool> {
-        self.core.verify_reasoned(q, copulas, 3.0).map(|x| x.0)
+    pub fn verify(&self, q: &[String], _copulas: &[String]) -> Option<bool> {
+        // held: every run of it at least half a full match (as for its answers)
+        self.core.verify(q).map(|v| v.0 >= 0.5)
     }
 
     /// does an answer speak of someone by name whom Darma does not know (a word written with a capital inside a

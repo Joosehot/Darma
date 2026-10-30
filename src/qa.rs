@@ -409,7 +409,7 @@ impl<'a> Talk<'a> {
         } else if asked {
             // "are you ...": a question of what it is, answered from itself only; any other ("how are you?") is talk,
             // answered as people did, but never against what it knows of itself
-            let of_what_i_am = w.first().is_some_and(|x| self.copulas.contains(x));
+            let of_what_i_am = w.first().is_some_and(|x| self.copulas.contains(x)) && self.yes_no(w);
             match self.me.verify(&q, &self.copulas) {
                 Some(true) => r("kyllä".into(), format!("I know of myself: {}", q.join(" ")), "yes"),
                 Some(false) if of_what_i_am => r("ei sen mukaan mitä tiedän itsestäni".into(), format!("I do not know this of myself: {}", q.join(" ")), "no"),
@@ -436,6 +436,11 @@ impl<'a> Talk<'a> {
     /// is this a question: it ends in "?", or opens with a word people's questions open with (learned)
     fn asks(&self, line: &str, w: &[String]) -> bool {
         line.trim_end().ends_with('?') || w.first().is_some_and(|f| self.dialog.as_ref().is_some_and(|d| d.opens_question(f)))
+    }
+
+    /// is this a question people answer with yes or no (learned from what they answered)?
+    fn yes_no(&self, w: &[String]) -> bool {
+        w.first().map_or(true, |f| self.dialog.as_ref().map_or(true, |d| d.asks_yes_no(f)))
     }
 
     fn line_inner(&mut self, line: &str) -> Reply {
@@ -465,6 +470,9 @@ impl<'a> Talk<'a> {
         } else if crate::me::about_speaker(&w) {
             let asked = self.asks(line, &w);
             self.of_you(asked, &w)
+        } else if self.asks(line, &w) && !hole && !self.yes_no(&w) {
+            // a question people do not answer with yes or no ("how's it going?"): talk
+            self.talk(&w).unwrap_or_else(|| r("en ymmärrä", "nothing people said to this is like it".into(), "unknown"))
         } else if self.asks(line, &w) && !hole {
             // what it was told answers first; if that cannot say, it answers as people did
             match self.core.verify_reasoned(&w, &self.copulas, 3.0) {

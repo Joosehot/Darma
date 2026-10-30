@@ -25,6 +25,8 @@ pub struct Dialog {
     /// the first words of people's turns, with how many of those turns were questions (ended in "?") and how many
     /// there were: what opens a question, learned
     openers: HashMap<String, (u32, u32)>,
+    /// of people's questions opening with each word: how many were answered with yes or no, of how many
+    yes_no: HashMap<String, (u32, u32)>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
@@ -75,6 +77,18 @@ impl Dialog {
                 }
             }
         }
+        // which questions people answer with yes or no ("Do you ...?" yes; "How's it going?" no); the words of a
+        // yes or a no are written by hand
+        let mut yes_no: HashMap<String, (u32, u32)> = HashMap::new();
+        for (w, text, next) in &turns {
+            if let (Some(f), Some(n), true) = (w.first(), next, text.trim_end().ends_with('?')) {
+                let e = yes_no.entry(f.clone()).or_default();
+                e.1 += 1;
+                if matches!(turns[*n].0.first().map(|s| s.as_str()), Some("yes" | "no" | "yeah" | "yep" | "nope" | "sure")) {
+                    e.0 += 1;
+                }
+            }
+        }
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         let mut df: HashMap<String, u32> = HashMap::new();
         for (i, (w, _, _)) in turns.iter().enumerate() {
@@ -86,7 +100,7 @@ impl Dialog {
         let n = turns.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
         let norm = turns.iter().map(|(w, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, prev, openers, index, df, norm, recent: Vec::new() })
+        Some(Dialog { turns, prev, openers, yes_no, index, df, norm, recent: Vec::new() })
     }
 
     fn idf(&self, r: &str) -> f32 {
@@ -204,6 +218,15 @@ impl Dialog {
     /// "?": "Hello?" on the phone is a question often, but not that often)?
     pub fn opens_question(&self, first: &str) -> bool {
         self.openers.get(first).is_some_and(|(q, n)| *n >= 20 && *q * 4 >= *n * 3)
+    }
+
+    /// is a question opening with this word one people answer with yes or no (at least one in four times)? A word
+    /// that opens no questions at all ("the dog chased the cat?") is a statement asked, and is answered so too.
+    pub fn asks_yes_no(&self, first: &str) -> bool {
+        match self.yes_no.get(first) {
+            Some((y, n)) if *n >= 20 => *y * 4 >= *n,
+            _ => true,
+        }
     }
 
     pub fn len(&self) -> usize {
