@@ -64,6 +64,8 @@ enum Cmd {
     UnderstandEval,
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
     ComposeEval,
+    /// Darma's own answer to lines (understanding, decision, a form filled), with how it chose
+    Compose { lines: Vec<String> },
     /// how Darma reads lines: their act and emotion
     Read { lines: Vec<String> },
     /// senses as measurements: which sense does memory hold in this place?
@@ -103,6 +105,21 @@ fn main() {
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
+        Cmd::Compose { lines } => {
+            let at = lexicon::Atoms::new(cli.dim, cli.seed);
+            let (u, _) = understand::strike_or_load(&at).expect("download DailyDialog first");
+            let c = compose::Composer::learn("data/raw/dailydialog/train_marked.json").unwrap();
+            let d = dialog::Dialog::load("data/raw/dailydialog/train_marked.json").unwrap();
+            for l in lines {
+                match c.answer(&u, &d, &lexicon::tokens(&l), &|_| None) {
+                    Some((a, why)) => println!("{l}
+  -> {a}
+     ({why})"),
+                    None => println!("{l}
+  -> (nothing)"),
+                }
+            }
+        }
         Cmd::Read { lines } => {
             let at = lexicon::Atoms::new(cli.dim, cli.seed);
             let (u, _) = understand::strike_or_load(&at).expect("download DailyDialog first");

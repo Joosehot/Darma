@@ -19,6 +19,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub const SLOT: &str = "___";
+/// the places of a two-place form: what the line did (its verb) and what to (its object)
+pub const DO: &str = "[DO]";
+pub const WHAT: &str = "[WHAT]";
 
 #[derive(Deserialize)]
 struct Marked {
@@ -35,11 +38,31 @@ pub struct Form {
     pub count: u32,
     /// how many different topics people filled it with (a form is a form only if it took more than one)
     pub topics: u32,
+    /// for a two-place form: the shape of the verb it took (only a verb of that shape fills it)
+    pub shape: &'static str,
+}
+
+/// a verb's shape, by its ending (the endings are written by hand): doing, done/did, does, do
+pub fn shape(v: &str) -> &'static str {
+    if v.ends_with("ing") {
+        "ing"
+    } else if v.ends_with("ed") {
+        "ed"
+    } else if v.ends_with('s') && !v.ends_with("ss") {
+        "s"
+    } else {
+        "base"
+    }
 }
 
 pub struct Composer {
     /// forms by (act, emotion) of the line answered
     forms: HashMap<(usize, usize), Vec<Form>>,
+    /// two-place forms by (act, emotion) of the line answered: answers that took up the line's verb and its object
+    /// ("Why do you [DO] [WHAT]?"), with how many different fillings people gave them
+    forms2: HashMap<(usize, usize), Vec<Form>>,
+    /// the words people marked as verbs in UD (at least twice)
+    verbs: std::collections::HashSet<String>,
     /// short answers to each feeling, most common first (emotion index > 0)
     to_feeling: Vec<Vec<(String, u32)>>,
     /// short answers to each act with no topic, most common first
@@ -96,10 +119,26 @@ impl Composer {
             .filter(|(_, (h, _))| *h >= 2)
             .map(|(w, (h, m))| (w, h as f32 / (h + m) as f32))
             .collect();
-        let mut c = Composer { forms: HashMap::new(), to_feeling: vec![Vec::new(); 7], to_act: vec![Vec::new(); 4], act_after: vec![vec![0; 4]; 4], df, turns, things, seen };
+        // the copulas people marked in UD are not what a line did ("is", "was")
+        let copulas: std::collections::HashSet<String> = std::fs::read_to_string("data/copulas.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, usize>>(&s).ok())
+            .map(|m| m.into_keys().collect())
+            .unwrap_or_default();
+        let verbs: std::collections::HashSet<String> = std::fs::read_to_string("data/verbs.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, u32>>(&s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|x| x.1 >= 2)
+            .map(|x| x.0)
+            .filter(|v| !copulas.contains(v))
+            .collect();
+        let mut c = Composer { forms2: HashMap::new(), verbs, forms: HashMap::new(), to_feeling: vec![Vec::new(); 7], to_act: vec![Vec::new(); 4], act_after: vec![vec![0; 4]; 4], df, turns, things, seen };
         let mut feel: Vec<HashMap<String, u32>> = vec![HashMap::new(); 7];
         let mut plain: Vec<HashMap<String, u32>> = vec![HashMap::new(); 4];
         let mut forms: HashMap<(usize, usize), HashMap<String, (Vec<String>, Vec<String>, u32, std::collections::HashSet<String>)>> = HashMap::new();
+        let mut forms2: HashMap<(usize, usize), HashMap<String, (Vec<String>, Vec<String>, u32, std::collections::HashSet<String>)>> = HashMap::new();
         for d in &data {
             for k in 0..d.dialog.len().saturating_sub(1) {
                 let (line, ans) = (tokens(&d.dialog[k]), tokens(&d.dialog[k + 1]));
@@ -113,6 +152,24 @@ impl Composer {
                         *feel[e].entry(tidy_words(&ans)).or_default() += 1;
                     }
                     *plain[a].entry(tidy_words(&ans)).or_default() += 1;
+                }
+                // a two-place form: the answer took up the line's verb (and its object, if it had one)
+                if let Some((vi, pi)) = c.clause(&line) {
+                    let (v, pw) = (line[vi].clone(), pi.map(|k| line[k].clone()));
+                    let takes_v = ans.iter().filter(|x| **x == v).count() == 1;
+                    let takes_p = pw.as_ref().map_or(false, |p| ans.iter().filter(|x| *x == p).count() == 1);
+                    // both places taken up (what was done, and to what), in an answer of four words or more
+                    if takes_v && takes_p && (4..=12).contains(&ans.len()) {
+                        let words: Vec<String> = ans
+                            .iter()
+                            .map(|x| if *x == v { DO.to_string() } else if Some(x) == pw.as_ref() && takes_p { WHAT.to_string() } else { x.clone() })
+                            .collect();
+                        let source: Vec<String> = line.iter().enumerate().filter(|(k, _)| *k != vi && Some(*k) != pi).map(|(_, x)| x.clone()).collect();
+                        let filling = format!("{v} {}", pw.clone().unwrap_or_default());
+                        let e2 = forms2.entry((a, 0)).or_default().entry(words.join(" ")).or_insert((words, source, 0, Default::default()));
+                        e2.2 += 1;
+                        e2.3.insert(filling);
+                    }
                 }
                 if let Some(t) = c.topic(&line) {
                     if ans.len() <= 12 && ans.iter().filter(|x| **x == t).count() == 1 {
@@ -133,9 +190,18 @@ impl Composer {
         };
         c.to_feeling = feel.into_iter().map(top).collect();
         c.to_act = plain.into_iter().map(top).collect();
+        // a two-place form needs no second filling to be a form: with both what was done and to what taken out, it
+        // already holds no one line's content ("What kind of [WHAT] do you [DO]?")
+        c.forms2 = forms2
+            .into_iter()
+            .map(|(k, m)| (k, m.into_values().map(|(words, source, count, ts)| {
+                let v = ts.iter().next().map(|f| f.split(' ').next().unwrap_or("").to_string()).unwrap_or_default();
+                Form { words, source, count, topics: ts.len() as u32, shape: shape(&v) }
+            }).collect()))
+            .collect();
         c.forms = forms
             .into_iter()
-            .map(|(k, m)| (k, m.into_values().filter(|x| x.3.len() >= 2).map(|(words, source, count, ts)| Form { words, source, count, topics: ts.len() as u32 }).collect()))
+            .map(|(k, m)| (k, m.into_values().filter(|x| x.3.len() >= 2).map(|(words, source, count, ts)| Form { words, source, count, topics: ts.len() as u32, shape: "" }).collect()))
             .collect();
         Some(c)
     }
@@ -159,6 +225,15 @@ impl Composer {
             .cloned()
     }
 
+    /// a line's clause: its first verb (a word people marked as a verb, met at least twice) and the first head of a
+    /// noun phrase after it within four words (its object), if any: positions in the line
+    pub fn clause(&self, line: &[String]) -> Option<(usize, Option<usize>)> {
+        let vi = line.iter().position(|x| self.verbs.contains(x) && self.df.get(x).is_some_and(|c| *c >= 2))?;
+        let head_like = |x: &String| self.things.get(x).is_some_and(|h| *h >= 0.5);
+        let pi = (vi + 1..(vi + 5).min(line.len())).find(|&k| head_like(&line[k]) && !line.get(k + 1).is_some_and(|n| head_like(n)));
+        Some((vi, pi))
+    }
+
     fn likeness(&self, a: &[String], b: &[String]) -> f32 {
         let w = |x: &String| self.rarity(x);
         let shared: f32 = a.iter().filter(|x| b.contains(x)).map(|x| w(x).powi(2)).sum();
@@ -180,6 +255,22 @@ impl Composer {
         if e > 0 {
             if let Some((s, n)) = self.to_feeling[e].iter().find(|(s, _)| test(s).is_none()) {
                 return Some((s.clone(), format!("{head}; to {} people most often say this ({n} times)", r.emotion)));
+            }
+        }
+        // a clause (what the line did, and to what): the two-place form whose line resonates most in meaning, filled
+        // with this line's verb and object
+        if let Some((vi, pi)) = self.clause(line) {
+            let rest: Vec<String> = line.iter().enumerate().filter(|(k, _)| *k != vi && Some(*k) != pi).map(|(_, x)| x.clone()).collect();
+            let here = d.meaning_state(&rest);
+            let vshape = shape(&line[vi]);
+            let pool: Vec<&Form> = self.forms2.get(&(a, 0)).map(|v| v.iter().filter(|f| f.shape == vshape && (pi.is_some() || !f.words.iter().any(|x| x == WHAT))).collect()).unwrap_or_default();
+            let mut best: Vec<(f32, &Form)> = pool.iter().map(|f| (here.sim(&d.meaning_state(&f.source)).max(0.0), *f)).collect();
+            best.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+            for (s, f) in best.iter().take(20) {
+                let said = tidy_words(&f.words.iter().map(|x| if x == DO { line[vi].clone() } else if x == WHAT { line[pi.unwrap()].clone() } else { x.clone() }).collect::<Vec<_>>());
+                if *s > 0.0 && test(&said).is_none() {
+                    return Some((said, format!("{head}; what it did: \"{}\"{}; a form people answered such lines with ({s:.2}, {} fillings): \"{}\"", line[vi], pi.map(|k| format!(", to \"{}\"", line[k])).unwrap_or_default(), f.topics, f.words.join(" "))));
+                }
             }
         }
         // a topic: the form whose line is most like this one, filled with the topic
@@ -211,6 +302,12 @@ pub fn eval(dim: usize, seed: u64) {
     let Some((u, _)) = crate::understand::strike_or_load(&at) else { return println!("download DailyDialog first") };
     let c = Composer::learn("data/raw/dailydialog/train_marked.json").unwrap();
     let dl = crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json").unwrap();
+    let n2: usize = c.forms2.values().map(|v| v.len()).sum();
+    println!("two-place forms: {n2}; some: {}", {
+        let mut all: Vec<&Form> = c.forms2.values().flatten().collect();
+        all.sort_by(|a, b| b.topics.cmp(&a.topics));
+        all.iter().take(8).map(|f| format!("\"{}\" ({})", f.words.join(" "), f.topics)).collect::<Vec<_>>().join(", ")
+    });
     println!("how people answer each act (share of the answer's act):");
     for (i, row) in c.act_after.iter().enumerate() {
         let n: u32 = row.iter().sum();
@@ -223,7 +320,7 @@ pub fn eval(dim: usize, seed: u64) {
         let common = a.iter().filter(|x| b.contains(x)).count() as f32;
         if common == 0.0 { 0.0 } else { let p = common / a.len() as f32; let r = common / b.len() as f32; 2.0 * p * r / (p + r) }
     };
-    let (mut n, mut f, mut copies, mut with_topic, mut feeling) = (0usize, 0f32, 0usize, 0usize, 0usize);
+    let (mut n, mut f, mut copies, mut with_topic, mut feeling, mut two) = (0usize, 0f32, 0usize, 0usize, 0usize, 0usize);
     let mut shown = 0;
     for d in &test {
         for k in 0..d.dialog.len().saturating_sub(1) {
@@ -237,6 +334,7 @@ pub fn eval(dim: usize, seed: u64) {
             f += f1(&aw, &real);
             copies += c.seen.contains(&aw.join(" ")) as usize;
             with_topic += why.contains("topic \"") as usize;
+            two += why.contains("what it did") as usize;
             feeling += (why.contains("people most often say this") && !why.contains("no topic")) as usize;
             if shown < 8 && n % 120 == 1 {
                 shown += 1;
@@ -244,5 +342,5 @@ pub fn eval(dim: usize, seed: u64) {
             }
         }
     }
-    println!("\n{n} test turns answered: shares words with the person's real answer F1 {:.3}; {:.1}% of the answers are word for word a training turn; {:.1}% filled a form with the line's topic; {:.1}% answered a feeling", f / n as f32, 100.0 * copies as f32 / n as f32, 100.0 * with_topic as f32 / n as f32, 100.0 * feeling as f32 / n as f32);
+    println!("\n{n} test turns answered: shares words with the person's real answer F1 {:.3}; {:.1}% of the answers are word for word a training turn; {:.1}% filled a two-place form, {:.1}% a one-place form; {:.1}% answered a feeling", f / n as f32, 100.0 * copies as f32 / n as f32, 100.0 * two as f32 / n as f32, 100.0 * with_topic as f32 / n as f32, 100.0 * feeling as f32 / n as f32);
 }

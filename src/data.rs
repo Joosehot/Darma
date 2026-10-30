@@ -224,6 +224,17 @@ pub fn prepare(dir: &Path) -> std::io::Result<()> {
         }
     }
     put("heads.json", serde_json::to_string(&heads).unwrap())?;
+    // verbs: the words people marked as a verb (not an auxiliary), with how often
+    let mut verbs: BTreeMap<String, u32> = BTreeMap::new();
+    for name in ["ud/en_ewt-ud-train.conllu", "ud/en_ewt-ud-dev.conllu"] {
+        for line in fs::read_to_string(raw.join(name)).unwrap().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 8 && !f[0].contains('-') && f[3] == "VERB" && f[1].chars().all(|c| c.is_alphabetic()) {
+                *verbs.entry(f[1].to_lowercase()).or_default() += 1;
+            }
+        }
+    }
+    put("verbs.json", serde_json::to_string(&verbs).unwrap())?;
     println!("copulas marked in UD: {:?}", cop.iter().filter(|x| *x.1 >= 20).collect::<Vec<_>>());
     println!("role-marked training sentences (UD EWT train + dev): {}, {} words", tg.len(), tg.iter().map(|t| t.words.len()).sum::<usize>());
     put("train.json", serde_json::to_string_pretty(&train).unwrap())?;

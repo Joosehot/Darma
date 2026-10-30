@@ -307,3 +307,19 @@ Kun lyhyiden yleismuottien suosimista vähennettiin, kopiointi nousi. Syy on se,
 | Hakuversio | 0,210 | 100 % |
 
 **Menetelmän raja:** muotti, jota ihmiset ovat käyttäneet monen eri aiheen kanssa, on lähes aina lyhyt, kuten "Which ___" tai "___ please". Pidemmät muotit esiintyvät vain kerran, ja ne ovat yksittäisiä lauseita eivätkä yleisiä muotteja. Yhden aukon muotit eivät siis yksin riitä oman lauseen tekemiseen. Seuraava askel olisi monen aukon rakenne, jossa on tekijä, teko ja kohde, ja jonka Darma oppisi UD:sta. Sisältö tulisi Darman omasta tiedosta, mutta tätä ei ole vielä rakennettu.
+
+## Oma lause, versio 3: teko ja kohde
+
+- **Lauseen ymmärrys.** Darma etsii repliikistä ensimmäisen verbin, eli UD:ssa verbiksi merkityn sanan, joka ei ole yhdistävä verbi, ja sen jälkeisen pääsanan. Esimerkiksi "I like football" antaa teon "like" ja kohteen "football".
+- **Kaksipaikkaiset muotit.** Vastauksista, jotka toistavat sekä edellisen puhujan teon että kohteen, opitaan muotteja, esimerkiksi "What kind of [KOHDE] do you [TEKO]?". Darma täyttää ne vain samanmuotoisella verbillä. Muotojen päätteet (-ing, -ed, -s) ovat käsin kirjoitettu sääntö.
+- **Data on harvaa.** 76 000 vuoroparista vain 201 toistaa sekä teon että kohteen. Yksikään muotti ei esiinny kahdesti, joten muotteja ei voi vaatia yleisiksi.
+
+| DailyDialog test, 150 keskustelua | F1 | Kopioita |
+|---|---|---|
+| Versio 3, kaksipaikkaiset muotit | 0,097–0,100 | 31–33 % |
+| Versio 2 | 0,073 | 44 % |
+| Hakuversio | 0,210 | 100 % |
+
+F1 on tähän asti paras oma lause, mutta lauseet ovat sekavia. Kerran nähty muotti on yksittäinen lause, josta on vaihdettu kaksi sanaa, ja muu alkuperäinen sisältö jää mukaan. Esimerkiksi "I bought a new car" saa vastauksen "That's funny my bought always loses ten car a day".
+
+**Johtopäätös:** omaa lausetta ei voi koota ihmisten yksittäisistä lauseista. Se pitää koota rakenteista, joita on nähty monessa lauseessa: lauseen osien järjestyksestä ja siitä, mitkä sanat sopivat mihinkin paikkaan. Sisällön pitää tulla siitä, mitä Darma tietää. Tämä on kieliopin oppimista, ja se on seuraavan vaiheen ydin.
