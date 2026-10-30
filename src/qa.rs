@@ -117,6 +117,26 @@ pub fn run(dim: usize, seed: u64) {
                 rsaid += a.is_some() as usize;
             }
         }
+        // yes/no: told statements (should be yes), wrong-way statements about the odd clauses (should not be), and
+        // the test clauses (untold: should not be). The standing a yes needs is learned on the even clauses' wrong-way
+        // statements, as above.
+        let mut neg: Vec<f32> = facts.iter().step_by(2).filter_map(|f| {
+            let s = vec![f[2].clone(), f[1].clone(), f[0].clone()];
+            (!facts.contains(&[s[0].clone(), s[1].clone(), s[2].clone()])).then(|| core.verify(&s).map(|x| x.1)).flatten()
+        }).collect();
+        neg.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let yes_at = neg[((neg.len() as f32 - 1.0) * 0.95) as usize];
+        let yes = |s: &[String]| core.verify(s).map_or(false, |x| x.1 > yes_at);
+        let told_yes = facts.iter().filter(|f| yes(&f[..])).count();
+        let wrong_way_st: Vec<Vec<String>> = facts.iter().skip(1).step_by(2).map(|f| vec![f[2].clone(), f[1].clone(), f[0].clone()]).filter(|s| !facts.contains(&[s[0].clone(), s[1].clone(), s[2].clone()])).collect();
+        let wrong_yes = wrong_way_st.iter().filter(|s| yes(s)).count();
+        let untold: Vec<[String; 3]> = d.test.iter().map(|c| c.gold()).filter(|g| !facts.contains(g)).collect();
+        let untold_yes = untold.iter().filter(|g| yes(&g[..])).count();
+        let untold_unknown = untold.iter().filter(|g| core.verify(&g[..]).is_none()).count();
+        println!(
+            "{:<10} yes/no: told said yes {:.1}%; wrong-way said yes {:.1}% (n={}); untold said yes {:.1}%, could not say {:.1}% (n={}); yes needs {:.2} sd",
+            "", pct(told_yes, facts.len()), pct(wrong_yes, wrong_way_st.len()), wrong_way_st.len(), pct(untold_yes, untold.len()), pct(untold_unknown, untold.len()), untold.len(), yes_at
+        );
         println!(
             "{:<10}{:>10.1}%{:>10.1}%{:>10.1}%{:>12.1}%{:>12.1}%{:>7.3}/{:.3}{:>8.0}",
             if beta > 0.0 { "with" } else { "without" },
@@ -142,7 +162,13 @@ pub fn chat(dim: usize, seed: u64, beta: f32) {
         if w.is_empty() {
             break;
         }
-        if w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
+        if line.trim_end().ends_with('?') && !w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
+            match core.verify(&w) {
+                None => println!("Darma: en tiedä      (some of these words I was never told)"),
+                Some((f, z)) if z >= 3.0 => println!("Darma: kyllä      (fidelity {f:.2}, {z:.1} sd)"),
+                Some((f, z)) => println!("Darma: ei sen mukaan mitä tiedän      (fidelity {f:.2}, {z:.1} sd)"),
+            }
+        } else if w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str())) {
             // with few things told there is little noise to learn from: the winner must hold over half of the
             // question and stand out by half a match
             core.threshold = 0.5;

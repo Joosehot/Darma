@@ -199,6 +199,32 @@ impl<'a> Core<'a> {
         out
     }
 
+    /// a yes/no question ("the dog chased the cat?"): the whole statement is measured. Every run of two or more of
+    /// its words is asked in every register of its words; returns None when some word was never told (memory cannot
+    /// say), else (fidelity, standing in noise deviations): the least over the registers and over the runs
+    pub fn verify(&self, words: &[String]) -> Option<(f32, f32)> {
+        let regs = self.collapse(words)?;
+        let mut runs: Vec<HVec> = Vec::new();
+        for n in 2..=RUN {
+            for i in 0..words.len().saturating_sub(n - 1) {
+                runs.push(self.run(&words[i..i + n]));
+            }
+        }
+        if runs.is_empty() {
+            return None;
+        }
+        let (mut fid, mut z) = (f32::MAX, f32::MAX);
+        for (psi, m) in &regs {
+            // a yes needs the whole statement: every run of it held (the least over the runs, not their mean: "the
+            // cat" and "the dog" told apart do not make "the cat chased the dog")
+            let f = runs.iter().map(|r| (psi.inner(r).re / self.at.d as f32).clamp(0.0, 1.0)).fold(f32::MAX, f32::min);
+            let sigma = ((*m as f32) / (2.0 * self.at.d as f32)).sqrt().max(1e-6);
+            fid = fid.min(f);
+            z = z.min(f / sigma);
+        }
+        Some((fid, z))
+    }
+
     /// how far the measurement's winner stands out: its fidelity over the runner-up's (the other candidates show
     /// what noise looks like in this very measurement)
     pub fn peak(m: &[(String, f32, f32)]) -> f32 {
