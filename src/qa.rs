@@ -148,14 +148,23 @@ pub fn run(dim: usize, seed: u64) {
     }
 }
 
-/// a conversation: a line with who/what is a question (measured), any other line is told (added to the state)
-pub fn chat(dim: usize, seed: u64, beta: f32) {
+/// a conversation: a line with who/what is a question (measured), a line ending in "?" is a yes/no question, any
+/// other line is told (added to the state). What was told is kept in `memory` (one sentence a line) and told again
+/// when the conversation starts (the same state, exactly: telling is deterministic).
+pub fn chat(dim: usize, seed: u64, beta: f32, memory: &str, fresh: bool) {
     let at = Atoms::new(dim, seed);
-    let d = data();
-    let (m, _) = train(&at, &d);
-    let mut core = Core::new(&at, Some(&m), beta);
+    let m = (beta > 0.0).then(|| train(&at, &data()).0);
+    let mut core = Core::new(&at, m.as_ref(), beta);
     let mut known: Vec<String> = Vec::new();
-    println!("Darma listens. Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\"). Empty line ends.");
+    if fresh {
+        let _ = std::fs::remove_file(memory);
+    }
+    let kept: Vec<String> = std::fs::read_to_string(memory).map(|s| s.lines().map(String::from).collect()).unwrap_or_default();
+    for line in &kept {
+        core.tell(&words_of(line));
+    }
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
+    println!("Darma listens ({} things remembered from before, in {memory}). Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\") or end with ? (\"the dog chased the cat?\"). Empty line ends.", kept.len());
     for line in std::io::stdin().lines() {
         let line = line.unwrap();
         let w = words_of(&line);
@@ -181,6 +190,8 @@ pub fn chat(dim: usize, seed: u64, beta: f32) {
             }
         } else {
             core.tell(&w);
+            use std::io::Write;
+            let _ = writeln!(log, "{}", w.join(" "));
             // what can fill a hole: every word told, and every two words told together
             let mut fills: Vec<String> = w.clone();
             fills.extend(w.windows(2).map(|p| p.join(" ")));
