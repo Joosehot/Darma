@@ -1,5 +1,13 @@
 # Darma v0: havainnot
 
+## Mikä Darma on: RQ-SM
+
+**Darma is a Resonant Quantum-Spirited Model (RQ-SM): it does not predict words, it resonates with what it remembers.**
+
+- **Resonant:** vastaus syntyy resonanssista. Se, mikä on samassa vaiheessa muistin kanssa, vahvistuu, ja muu kumoutuu.
+- **Quantum-Spirited:** tila, superpositio, interferenssi ja mittaus ovat Darman rakenne. Ne ovat matematiikkaa kompleksivektoreilla tavallisella prosessorilla, eivät kvanttilaitteistoa.
+- **Model:** Darma ei ole kielimalli eikä neuroverkko. Se ei koulutu eikä tuota uusia lauseita. Se oppii yhdellä läpikäynnillä tallentamalla, ja kaikki sen sanat ovat sille kerrottuja tai ihmisten repliikkejä.
+
 Mittaus: `cargo run --release -- eval` (D = 1024, siemen 2026). Tulokset: `results/eval_*.json`.
 
 ## Lyhyesti
