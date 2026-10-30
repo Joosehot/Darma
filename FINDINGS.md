@@ -351,3 +351,10 @@ Keskustelussa Darma käyttää omaa lausettaan ensin. Ihmisten repliikkiin se tu
 - Merkitys on vielä karkea: menneeseen kertomukseen Darma kysyy tulevasta, kuten "When will you buy car?".
 - Kohde tunnistuu vain, jos sana esiintyy UD:ssa pääsanana. Siksi "I like football" ei vielä tuota omaa lausetta.
 - Omia lauseita syntyy vain kysymyksiksi siitä, mitä puhuja teki. Muut repliikit menevät edelleen keskustelumuistiin.
+
+## Eletyt vaihdot (Primin opetus)
+
+- Darma vastaa ensin sillä, mitä se on elänyt: omistajan opettama vastaus (✏️ opeta) tai 👍-merkitty vastaus tallentuu tiedostoon `darma_memory_lived.jsonl` ja löytyy samankaltaisuudella (puolet harvinaisuudella painotetut yhteiset jaksot, puolet merkityksen resonanssi; raja 0.6). "how is the weather today" löysi opetetun "what is the weather like" -vastauksen (0.64).
+- Vieraiden ihmisten repliikit (DailyDialog) vain lyhyisiin sosiaalisiin fraaseihin (≤5 sanaa, osuma ≥0.8) ja tunteisiin. Muuten: "I don't understand that yet. What should I say?"
+- Kaikki vastaukset englanniksi.
+- Heikkous: tunteenlukija (F1 0.33) ei tunnista "I am so sad today" -lausetta surulliseksi, joten empatia ei vielä laukea; "thank you" → "Bye!" on korpuksen kohinaa, jonka opettaminen korjaa.
