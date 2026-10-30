@@ -363,18 +363,30 @@ impl<'a> Talk<'a> {
                 Some(_) => r("ei sen mukaan mitä tiedän sinusta".into(), format!("you have not told me: {}", q.join(" ")), "no"),
                 None => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
             }
-        } else if !matches!(w.first().map(|s| s.as_str()), Some("i" | "my")) {
-            // the speaker spoke of themselves but did not say what they are ("tell me a joke"): talk
-            self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it".into(), "unknown"))
         } else {
-            let s = crate::me::to_you(w);
+            // what the speaker says of themselves begins where "i" or "my" begins ("hello darma, I am Joose": "i am
+            // joose"); without it ("tell me a joke") it is only talk
+            let Some(k) = w.iter().position(|x| x == "i" || x == "my") else {
+                return self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it".into(), "unknown"));
+            };
+            let s = crate::me::to_you(&w[k..]);
             let i = self.said.len();
             self.learn(&s);
             use std::io::Write;
             let _ = writeln!(self.log, "{}", s.join(" "));
-            let mut rep = r("muistan sen sinusta".into(), s.join(" "), "told");
-            rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
-            rep
+            // it answers the whole of what was said as people did, and keeps what it heard of you; if nothing people
+            // said fits, it says it keeps it, and what it recalls of it
+            match self.talk(w) {
+                Some(mut t) => {
+                    t.why = format!("{}; I keep of you: {}", t.why, s.join(" "));
+                    t
+                }
+                None => {
+                    let mut rep = r("muistan sen sinusta".into(), s.join(" "), "told");
+                    rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
+                    rep
+                }
+            }
         }
     }
 

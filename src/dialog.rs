@@ -200,9 +200,10 @@ impl Dialog {
         None
     }
 
-    /// does a turn opening with this word ask, as people's turns do (at least 20 of them, most ending in "?")?
+    /// does a turn opening with this word ask, as people's turns do (at least 20 of them, three in four ending in
+    /// "?": "Hello?" on the phone is a question often, but not that often)?
     pub fn opens_question(&self, first: &str) -> bool {
-        self.openers.get(first).is_some_and(|(q, n)| *n >= 20 && *q * 2 > *n)
+        self.openers.get(first).is_some_and(|(q, n)| *n >= 20 && *q * 4 >= *n * 3)
     }
 
     pub fn len(&self) -> usize {
