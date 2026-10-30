@@ -46,6 +46,8 @@ enum Cmd {
     Qa,
     /// the scale test: told every UD training sentence whole, asked about the marked clauses in their own words
     QaSentences,
+    /// the marks given on the chat page: how many answers were sensible, by how Darma made them
+    Ratings,
     /// the chat page in a browser
     Serve {
         #[arg(long, default_value_t = 5900)]
@@ -153,6 +155,7 @@ fn main() {
             }
         }
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
+        Cmd::Ratings => qa::ratings(),
         Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {

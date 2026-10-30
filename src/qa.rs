@@ -593,6 +593,13 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
             let rep = talk.line(body.trim());
             let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "recall": rep.recall, "ask": rep.ask, "told": talk.core.told});
             ("application/json", j.to_string())
+        } else if head.starts_with("POST /rate") {
+            // a mark on an answer (sensible or not), kept for measuring: one line of JSON each
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("darma_ratings.jsonl") {
+                let _ = writeln!(f, "{}", body.trim().replace('\n', " "));
+            }
+            ("application/json", "{}".to_string())
         } else if head.starts_with("GET /self") {
             ("application/json", serde_json::json!({"self": talk.me.all()}).to_string())
         } else if head.starts_with("GET /state") {
@@ -723,4 +730,41 @@ pub fn senses(dim: usize, seed: u64) {
     }
     println!("sense chosen right {:.1}% (n={n}; no sense held at all {:.1}%)", pct(right, n), pct(none, n));
     println!("{}", per.iter().map(|(w, (a, b))| format!("{w} {:.0}%", pct(*a, *b))).collect::<Vec<_>>().join("  "));
+}
+
+/// `darma ratings`: the marks given on the page: the share of sensible answers, by how Darma made them
+pub fn ratings() {
+    let Ok(s) = std::fs::read_to_string("darma_ratings.jsonl") else { return println!("no marks yet (darma_ratings.jsonl)") };
+    // the last mark of each answer counts (a mark can be changed)
+    let mut last: HashMap<(String, String), (String, String)> = HashMap::new();
+    for l in s.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
+        let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        last.insert((g("line"), g("said")), (g("kind"), g("mark")));
+    }
+    let mut by: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    for (_, (kind, mark)) in &last {
+        let e = by.entry(kind.clone()).or_default();
+        e.1 += 1;
+        e.0 += (mark == "good") as usize;
+    }
+    let (g, n) = by.values().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    println!("{g} of {n} answers marked sensible ({:.0}%)", pct(g, n));
+    let name = |k: &str| match k {
+        "own" => "Darma's own sentence",
+        "talk" => "a person's line",
+        "answer" => "from its memory",
+        "yes" | "no" => "yes/no from its memory",
+        "told" => "it remembers",
+        "unknown" => "it does not know",
+        _ => "other",
+    };
+    for (k, (g, n)) in &by {
+        println!("  {:<24} {g} of {n} ({:.0}%)", name(k), pct(*g, *n));
+    }
+    println!("not sensible:");
+    for ((line, said), (kind, mark)) in last.iter().filter(|x| x.1 .1 == "bad").take(15) {
+        println!("  {line:<40} -> {said}   [{}]", name(kind));
+        let _ = mark;
+    }
 }

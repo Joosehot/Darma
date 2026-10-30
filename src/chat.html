@@ -48,6 +48,9 @@
   .answers { display: flex; gap: 6px; margin-top: 8px; }
   .answers button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
   .answers button:hover { border-color: var(--accent); }
+  .rate { display: flex; gap: 4px; margin-top: 6px; }
+  .rate button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 6px; padding: 1px 8px; cursor: pointer; }
+  .rate button.on { border-color: var(--accent); color: var(--ink); }
   .selfbtn { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 4px 10px; cursor: pointer; margin-left: 8px; }
   #self { display: none; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 14px; margin: 8px 0; font-size: 14px; }
   #self.open { display: block; }
@@ -127,13 +130,27 @@ async function refreshSelf() {
   } catch (e) {}
 }
 document.getElementById("selfbtn").onclick = () => { selfBox.classList.toggle("open"); refreshSelf(); };
+// was the answer sensible? one press, kept by Darma for measuring (the line, the answer, how it chose, the mark)
+function rateRow(d, line, j) {
+  const box = document.createElement("div"); box.className = "rate";
+  for (const [mark, label] of [["good", "👍 järkevä"], ["bad", "👎 ei"]]) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+    b.onclick = async () => {
+      box.querySelectorAll("button").forEach(x => x.classList.remove("on")); b.classList.add("on");
+      try { await fetch("/rate", { method: "POST", body: JSON.stringify({ line, said: j.said, why: j.why, kind: j.kind, mark }) }); } catch (e) {}
+    };
+    box.appendChild(b);
+  }
+  d.appendChild(box);
+}
 async function say(text) {
   document.querySelectorAll(".answers").forEach(x => x.remove());
   add("me", text); send.disabled = true;
   try {
     const r = await fetch("/say", { method: "POST", body: text });
     const j = await r.json();
-    add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why, j.recall);
+    const dd = add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why, j.recall);
+    rateRow(dd, text, j);
     if (j.ask) askBubble(j.ask);
     setState(j.told);
     if (selfBox.classList.contains("open")) refreshSelf();
