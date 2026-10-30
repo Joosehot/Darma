@@ -184,13 +184,39 @@ pub fn learn_and_choose<'a>(at: &'a Atoms) -> Option<Understanding<'a>> {
     Some(u)
 }
 
+/// what the strike leaves: everything learned, to be loaded instead of learned again
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Struck {
+    idf: HashMap<String, f32>,
+    acts: Vec<HVec>,
+    emotions: Vec<HVec>,
+    act_prior: Vec<f32>,
+    emotion_prior: Vec<f32>,
+    weights: (f32, f32),
+}
+
+/// the understanding, struck once: loaded from data/strike/understanding_D<d>.json if it is there, else learned (one
+/// pass, the weights chosen on validation) and saved there. Returns it and whether it was loaded.
+pub fn strike_or_load<'a>(at: &'a Atoms) -> Option<(Understanding<'a>, bool)> {
+    let path = format!("data/strike/understanding_D{}.json", at.d);
+    if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Struck>(&s).ok()) {
+        let u = Understanding { core: Core::new(at, None, 0.0), idf: s.idf, acts: s.acts, emotions: s.emotions, act_prior: s.act_prior, emotion_prior: s.emotion_prior, weights: s.weights };
+        return Some((u, true));
+    }
+    let u = learn_and_choose(at)?;
+    let s = Struck { idf: u.idf.clone(), acts: u.acts.clone(), emotions: u.emotions.clone(), act_prior: u.act_prior.clone(), emotion_prior: u.emotion_prior.clone(), weights: u.weights };
+    let _ = std::fs::create_dir_all("data/strike");
+    let _ = std::fs::write(&path, serde_json::to_string(&s).unwrap());
+    Some((u, false))
+}
+
 /// `darma understand-eval`: learned on DailyDialog's train split, the weights of commonness chosen on its validation
 /// split, measured on its test split
 pub fn eval(dim: usize, seed: u64) {
     let at = Atoms::new(dim, seed);
     let t0 = std::time::Instant::now();
-    let Some(u) = learn_and_choose(&at) else { return println!("download DailyDialog first") };
-    println!("learned in one pass and chose the weights on validation in {:.1} s, D {dim}: commonness weighs {} for acts, {} for emotions", t0.elapsed().as_secs_f64(), u.weights.0, u.weights.1);
+    let Some((u, loaded)) = strike_or_load(&at) else { return println!("download DailyDialog first") };
+    println!("{} in {:.1} s, D {dim}: commonness weighs {} for acts, {} for emotions", if loaded { "the strike loaded" } else { "struck (one pass, weights chosen on validation) and saved" }, t0.elapsed().as_secs_f64(), u.weights.0, u.weights.1);
     let (ca, ce) = confusion(&u, "data/raw/dailydialog/test_marked.json");
     for (name, conf, names) in [("acts", &ca, &ACTS[..]), ("emotions", &ce, &EMOTIONS[..])] {
         let (acc, mf, f1s) = scores(conf);

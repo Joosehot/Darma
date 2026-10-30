@@ -200,7 +200,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh) };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh) };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -318,7 +318,7 @@ impl<'a> Talk<'a> {
         let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
         let test = |ans: &str| me.names_a_stranger(ans, &known).or_else(|| me.contradicts(&words_of(ans)));
         let d = self.dialog.as_mut()?;
-        let found = d.reply_where(w, last.as_deref(), &test).filter(|x| x.2 >= crate::dialog::LOOSE_AT);
+        let found = d.reply_where(w, last.as_deref(), None, &test).filter(|x| x.2 >= crate::dialog::LOOSE_AT);
         let Some((ans, matched, s, let_go)) = found else {
             // nothing people said is like it: it asks back, as people most often did (the first of their questions
             // back it did not ask just now)

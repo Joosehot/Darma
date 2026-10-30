@@ -10,7 +10,7 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use std::f32::consts::TAU;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HVec(pub Vec<Complex32>);
 
 impl HVec {

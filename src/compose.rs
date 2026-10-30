@@ -207,7 +207,7 @@ impl Composer {
 /// answer (shared words, F1), and how many of its answers are word for word some training turn (copies)
 pub fn eval(dim: usize, seed: u64) {
     let at = crate::lexicon::Atoms::new(dim, seed);
-    let Some(u) = crate::understand::learn_and_choose(&at) else { return println!("download DailyDialog first") };
+    let Some((u, _)) = crate::understand::strike_or_load(&at) else { return println!("download DailyDialog first") };
     let c = Composer::learn("data/raw/dailydialog/train_marked.json").unwrap();
     println!("how people answer each act (share of the answer's act):");
     for (i, row) in c.act_after.iter().enumerate() {

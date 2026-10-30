@@ -55,8 +55,11 @@ enum Cmd {
         #[arg(long)]
         seed_ud: bool,
     },
-    /// conversation from people's conversations: DailyDialog's test dialogues against Darma's answers
-    DialogEval,
+    /// conversation from people's conversations: DailyDialog's test dialogues against Darma's answers (a short run)
+    DialogEval {
+        #[arg(default_value_t = 150)]
+        dialogues: usize,
+    },
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
@@ -100,14 +103,14 @@ fn main() {
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Read { lines } => {
             let at = lexicon::Atoms::new(cli.dim, cli.seed);
-            let u = understand::learn_and_choose(&at).expect("download DailyDialog first");
+            let (u, _) = understand::strike_or_load(&at).expect("download DailyDialog first");
             for l in lines {
                 let r = u.read(&lexicon::tokens(&l));
                 let top = |v: &[(&str, f32)]| v.iter().take(3).map(|(n, s)| format!("{n} {s:.3}")).collect::<Vec<_>>().join(", ");
                 println!("{l:<40} act: {:<11} ({})   emotion: {:<10} ({})", r.act, top(&r.act_scores), r.emotion, top(&r.emotion_scores));
             }
         }
-        Cmd::DialogEval => dialog::eval("data/raw/dailydialog/train.json", "data/raw/dailydialog/test.json"),
+        Cmd::DialogEval { dialogues } => dialog::eval(dialogues),
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
         Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),

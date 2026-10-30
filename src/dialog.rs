@@ -22,7 +22,28 @@ pub const LOOSE_AT: f32 = 0.2;
 /// hand)
 pub const CONTEXT: f32 = 0.5;
 
+/// what understanding gives the choice: the act and emotion read in the line, the act people answer that act with,
+/// and how much this weighs beside likeness
+#[derive(Clone, Copy)]
+pub struct Guide {
+    pub act: usize,
+    pub emotion: usize,
+    pub answer_act: usize,
+    pub weight: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct MarkedDialog {
+    dialog: Vec<String>,
+    act: Vec<i64>,
+    emotion: Vec<i64>,
+}
+
 pub struct Dialog {
+    /// each turn's act and emotion as people marked them (from the marked file)
+    marks: Vec<Option<(usize, usize)>>,
+    /// how people answer each act: counts of the answer's act
+    pub act_after: Vec<Vec<u32>>,
     /// every kept turn: its words, its text, and the turn that answered it (if any)
     turns: Vec<(Vec<String>, String, Option<usize>)>,
     /// the turn before each kept turn in its dialogue
@@ -38,14 +59,20 @@ pub struct Dialog {
     units: Vec<(Vec<String>, String, usize, bool)>,
     /// the sentence before each sentence in its dialogue
     unit_prev: Vec<Option<usize>>,
+    /// each sentence's runs (sorted), and what follows it (its text, its words joined): computed once, at loading
+    unit_runs: Vec<Vec<String>>,
+    follow: Vec<Option<String>>,
+    follow_words: Vec<String>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
     recent: Vec<usize>,
+    /// a buffer for summing scores, reused by every query
+    scratch: std::cell::RefCell<Vec<f32>>,
 }
 
 /// a turn's sentences (DailyDialog spaces its marks: "Hello , darling ! Did you ...?")
-fn sentences(text: &str) -> Vec<String> {
+pub fn sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
     for tok in text.split_whitespace() {
@@ -84,15 +111,27 @@ pub fn tidy(s: &str) -> String {
 
 impl Dialog {
     pub fn load(path: &str) -> Option<Dialog> {
-        let dialogs: Vec<Vec<String>> = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        let text = std::fs::read_to_string(path).ok()?;
+        // the marked file (with acts and emotions) or the plain one
+        let marked: Vec<MarkedDialog> = match serde_json::from_str::<Vec<MarkedDialog>>(&text) {
+            Ok(m) => m,
+            Err(_) => serde_json::from_str::<Vec<Vec<String>>>(&text).ok()?.into_iter().map(|d| MarkedDialog { act: vec![0; d.len()], emotion: vec![-1; d.len()], dialog: d }).collect(),
+        };
         let mut turns = Vec::new();
         let mut prev = Vec::new();
-        for d in &dialogs {
+        let mut marks = Vec::new();
+        let mut act_after = vec![vec![0u32; 4]; 4];
+        for d in &marked {
             let start = turns.len();
-            for (k, u) in d.iter().enumerate() {
-                let next = (k + 1 < d.len()).then(|| start + k + 1);
+            for (k, u) in d.dialog.iter().enumerate() {
+                let next = (k + 1 < d.dialog.len()).then(|| start + k + 1);
                 turns.push((tokens(u), u.clone(), next));
                 prev.push((k > 0).then(|| start + k - 1));
+                let m = (d.act[k] > 0 && d.emotion[k] >= 0).then(|| ((d.act[k] as usize - 1).min(3), (d.emotion[k] as usize).min(6)));
+                marks.push(m);
+                if k + 1 < d.dialog.len() && d.act[k] > 0 && d.act[k + 1] > 0 {
+                    act_after[(d.act[k] as usize - 1).min(3)][(d.act[k + 1] as usize - 1).min(3)] += 1;
+                }
             }
         }
         let mut openers: HashMap<String, (u32, u32)> = HashMap::new();
@@ -142,18 +181,32 @@ impl Dialog {
                 units.push((tokens(s), s.clone(), ti, k + 1 == ss.len()));
             }
         }
+        let unit_runs: Vec<Vec<String>> = units.iter().map(|u| runs(&u.0)).collect();
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         let mut df: HashMap<String, u32> = HashMap::new();
-        for (i, (w, _, _, _)) in units.iter().enumerate() {
-            for r in runs(w) {
+        for (i, rs) in unit_runs.iter().enumerate() {
+            for r in rs {
                 *df.entry(r.clone()).or_default() += 1;
-                index.entry(r).or_default().push(i as u32);
+                index.entry(r.clone()).or_default().push(i as u32);
             }
         }
         let n = units.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
-        let norm = units.iter().map(|(w, _, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, prev, openers, yes_no, ask_back, units, unit_prev, index, df, norm, recent: Vec::new() })
+        let norm = unit_runs.iter().map(|rs| rs.iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
+        // what follows each sentence: the rest of its turn if the person went on, else the next person's turn
+        let follow: Vec<Option<String>> = (0..units.len())
+            .map(|u| {
+                let (_, _, ti, last) = &units[u];
+                if *last {
+                    turns[*ti].2.map(|nx| tidy(&turns[nx].1))
+                } else {
+                    let rest: Vec<&str> = units[u + 1..].iter().take_while(|x| x.2 == *ti).map(|x| x.1.as_str()).collect();
+                    Some(tidy(&rest.join(" ")))
+                }
+            })
+            .collect();
+        let follow_words: Vec<String> = follow.iter().map(|f| f.as_deref().map(|s| tokens(s).join(" ")).unwrap_or_default()).collect();
+        Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default() })
     }
 
     fn idf(&self, r: &str) -> f32 {
@@ -162,23 +215,22 @@ impl Dialog {
 
     /// what follows a sentence: the rest of its turn if the person went on, else the next person's turn
     fn follows(&self, u: usize) -> Option<String> {
-        let (_, _, ti, last) = &self.units[u];
-        if *last {
-            self.turns[*ti].2.map(|n| tidy(&self.turns[n].1))
-        } else {
-            let rest: Vec<&str> = self.units[u + 1..].iter().take_while(|x| x.2 == *ti).map(|x| x.1.as_str()).collect();
-            Some(tidy(&rest.join(" ")))
-        }
+        self.follow[u].clone()
     }
 
     fn has_follow(&self, u: usize) -> bool {
-        let (_, _, ti, last) = &self.units[u];
-        !*last || self.turns[*ti].2.is_some()
+        self.follow[u].is_some()
+    }
+
+    /// would answering by this sentence only say back what was just said?
+    fn echoes(&self, u: usize, said: &str) -> bool {
+        let f = &self.follow_words[u];
+        !f.is_empty() && said.contains(&format!(" {f} "))
     }
 
     /// how alike a sentence's runs (known ones, with their norm) are to kept turn i (cosine)
     fn cos_to(&self, q: &[String], qn: f32, i: usize) -> f32 {
-        let tr = runs(&self.units[i].0);
+        let tr = &self.unit_runs[i];
         q.iter().filter(|r| tr.binary_search(r).is_ok()).map(|r| self.idf(r).powi(2)).sum::<f32>() / (qn * self.norm[i])
     }
 
@@ -194,9 +246,33 @@ impl Dialog {
     ///   the topic: the rarest known word of what was said; a turn holding it is looked for first, and taken if it is
     ///              alike enough (TALK_AT), so "what do you think about dogs" stays with dogs;
     ///   the conversation: a turn whose own turn before is like what Darma said last gains CONTEXT times that likeness.
+    /// the act people most often answer this act with
+    pub fn answer_act(&self, act: usize) -> usize {
+        (0..4).max_by_key(|&i| self.act_after[act][i]).unwrap_or(0)
+    }
+
+    /// how well a kept sentence fits what understanding decided: its line was of the same act, and of the same
+    /// emotion, and what followed it is of the act Darma decided to answer with (each 1)
+    fn fits(&self, u: usize, g: &Guide) -> f32 {
+        let (_, _, ti, last) = &self.units[u];
+        let Some((a, e)) = self.marks[*ti] else { return 0.0 };
+        let next_act = if *last { self.turns[*ti].2.and_then(|n| self.marks[n]).map(|m| m.0) } else { Some(a) };
+        (a == g.act) as u8 as f32 + (e == g.emotion) as u8 as f32 + (next_act == Some(g.answer_act)) as u8 as f32
+    }
+
     pub fn nearest(&self, words: &[String], context: Option<&[String]>, skip: &[usize]) -> Option<(usize, f32)> {
+        self.nearest_guided(words, context, skip, None)
+    }
+
+    pub fn nearest_guided(&self, words: &[String], context: Option<&[String]>, skip: &[usize], guide: Option<&Guide>) -> Option<(usize, f32)> {
         let (q, qn) = self.known_runs(words);
-        let mut score: HashMap<u32, f32> = HashMap::new();
+        let said = format!(" {} ", words.join(" "));
+        // the scores, summed in one buffer the size of memory (touched places remembered, cleared after)
+        let mut buf = self.scratch.borrow_mut();
+        if buf.len() != self.units.len() {
+            *buf = vec![0.0; self.units.len()];
+        }
+        let mut touched: Vec<u32> = Vec::new();
         for r in &q {
             let Some(ids) = self.index.get(r) else { continue };
             let w = self.idf(r).powi(2);
@@ -205,12 +281,19 @@ impl Dialog {
                 continue;
             }
             for &i in ids {
-                *score.entry(i).or_default() += w;
+                if buf[i as usize] == 0.0 {
+                    touched.push(i);
+                }
+                buf[i as usize] += w;
             }
         }
+        let score: Vec<(u32, f32)> = touched.iter().map(|&i| (i, std::mem::take(&mut buf[i as usize]))).collect();
+        drop(buf);
         let mut cands: Vec<(usize, f32)> = score
             .into_iter()
             .map(|(i, s)| (i as usize, s / (qn * self.norm[i as usize])))
+            // not an answer that only says back what was just said ("...Don't you like watching it?" answered with
+            // "Don't you like watching it?")
             .filter(|(i, _)| self.has_follow(*i) && !skip.contains(i))
             .collect();
         cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -224,9 +307,12 @@ impl Dialog {
         // the turns holding the topic are taken from all candidates (a long frame like "what do you think about"
         // would push them out of the best few hundred)
         let topical: Vec<(usize, f32)> = match topic {
-            Some(tw) => cands.iter().filter(|(i, _)| self.units[*i].0.contains(tw)).take(300).cloned().collect(),
+            Some(tw) => cands.iter().filter(|(i, _)| self.units[*i].0.contains(tw) && !self.echoes(*i, &said)).take(300).cloned().collect(),
             None => Vec::new(),
         };
+        // not an answer that only says back what was just said (checked on the best few, not on all)
+        cands.truncate(400);
+        cands.retain(|(i, _)| !self.echoes(*i, &said));
         cands.truncate(300);
         let ctx = context.map(|c| self.known_runs(c));
         let total = |&(i, s): &(usize, f32)| -> f32 {
@@ -234,7 +320,8 @@ impl Dialog {
                 (Some((cq, cn)), Some(p)) => CONTEXT * self.cos_to(cq, *cn, p),
                 _ => 0.0,
             };
-            s + c
+            let g = guide.map_or(0.0, |g| g.weight * self.fits(i, g));
+            s + c + g
         };
         let pick = |set: Vec<&(usize, f32)>| -> Option<(usize, f32)> {
             set.into_iter()
@@ -245,7 +332,7 @@ impl Dialog {
                     a.2.partial_cmp(&b.2)
                         .unwrap()
                         .then(self.units[a.0].3.cmp(&self.units[b.0].3))
-                        .then(self.follows(b.0).map_or(0, |s| s.len()).cmp(&self.follows(a.0).map_or(0, |s| s.len())))
+                        .then(self.follow[b.0].as_ref().map_or(0, |s| s.len()).cmp(&self.follow[a.0].as_ref().map_or(0, |s| s.len())))
                         .then(self.units[b.0].1.len().cmp(&self.units[a.0].1.len()))
                         .then(b.0.cmp(&a.0))
                 })
@@ -259,9 +346,9 @@ impl Dialog {
 
     /// Darma's answer: what people answered to the turn most like this one; (answer, the turn it matched, likeness).
     /// The same answer is not given twice in a row.
-    pub fn reply(&mut self, words: &[String], context: Option<&[String]>) -> Option<(String, String, f32)> {
+    pub fn reply(&mut self, words: &[String], context: Option<&[String]>, guide: Option<&Guide>) -> Option<(String, String, f32)> {
         let recent = self.recent.clone();
-        let (i, s) = self.nearest(words, context, &recent)?;
+        let (i, s) = self.nearest_guided(words, context, &recent, guide)?;
         let ans = self.follows(i)?;
         self.recent.push(i);
         if self.recent.len() > 8 {
@@ -272,11 +359,11 @@ impl Dialog {
 
     /// the best answer that passes `test` (None: passes; Some(reason): let go), trying up to ten turns in order of
     /// likeness; returns (answer, the turn it matched, likeness, what was let go and why)
-    pub fn reply_where(&mut self, words: &[String], context: Option<&[String]>, test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String, f32, Vec<String>)> {
+    pub fn reply_where(&mut self, words: &[String], context: Option<&[String]>, guide: Option<&Guide>, test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String, f32, Vec<String>)> {
         let mut skip = self.recent.clone();
         let mut let_go = Vec::new();
         for _ in 0..10 {
-            let (i, s) = self.nearest(words, context, &skip)?;
+            let (i, s) = self.nearest_guided(words, context, &skip, guide)?;
             let ans = self.follows(i)?;
             match test(&ans) {
                 None => {
@@ -315,60 +402,64 @@ impl Dialog {
     }
 }
 
-/// `darma dialog-eval`: DailyDialog's own test dialogues. For each test turn that was answered, Darma's answer is
-/// compared with the person's real answer by the share of their words in common (F1), against the same for an answer
-/// drawn at random from the kept turns (the line to beat).
-pub fn eval(path_train: &str, path_test: &str) {
-    for use_context in [false, true] {
-        println!("== {}", if use_context { "with the turn before as context" } else { "each turn alone" });
-        eval_once(path_train, path_test, use_context);
-    }
+/// how much understanding weighs beside likeness (chosen once on DailyDialog's validation split, 2026-10-31: 0.03;
+/// 0 to 0.2 all gave about the same)
+pub const GUIDE: f32 = 0.03;
+
+/// `darma dialog-eval [dialogues]`: the first dialogues of DailyDialog's test split (150 unless told), one pass. For
+/// each turn, Darma's answer against the person's real answer (shared words, F1), against a random kept answer; turns
+/// repeated from training (matched at 0.9 or more) are left out.
+pub fn eval(limit: usize) {
+    let t0 = std::time::Instant::now();
+    let at = crate::lexicon::Atoms::new(1024, 2026);
+    let Some((u, loaded)) = crate::understand::strike_or_load(&at) else { return println!("download DailyDialog first") };
+    let Some(mut d) = Dialog::load("data/raw/dailydialog/train_marked.json") else { return println!("download DailyDialog first") };
+    println!("ready in {:.1} s (understanding {}, the dialogue memory built)", t0.elapsed().as_secs_f64(), if loaded { "loaded" } else { "struck and saved" });
+    let t1 = std::time::Instant::now();
+    eval_once(&mut d, &u, "data/raw/dailydialog/test_marked.json", GUIDE, true, limit);
+    println!("asked in {:.1} s", t1.elapsed().as_secs_f64());
 }
 
-fn eval_once(path_train: &str, path_test: &str, use_context: bool) {
-    let Some(mut d) = Dialog::load(path_train) else { return println!("{path_train}: download DailyDialog first") };
-    let test: Vec<Vec<String>> = serde_json::from_str(&std::fs::read_to_string(path_test).unwrap()).unwrap();
+fn eval_once(d: &mut Dialog, u: &crate::understand::Understanding, path: &str, weight: f32, show: bool, limit: usize) -> f32 {
+    let mut test: Vec<MarkedDialog> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    test.truncate(limit);
     let f1 = |a: &[String], b: &[String]| -> f32 {
         let common = a.iter().filter(|x| b.contains(x)).count() as f32;
-        if common == 0.0 {
-            0.0
-        } else {
-            let p = common / a.len() as f32;
-            let r = common / b.len() as f32;
-            2.0 * p * r / (p + r)
-        }
+        if common == 0.0 { 0.0 } else { let p = common / a.len() as f32; let r = common / b.len() as f32; 2.0 * p * r / (p + r) }
     };
-    let (mut n, mut f, mut fr, mut liked) = (0usize, 0f32, 0f32, 0f32);
-    // DailyDialog repeats some dialogues between its train and test splits: turns matched at 0.9 or more are counted
-    // apart (they are remembered, not answered)
-    let (mut dup, mut nf, mut nfr) = (0usize, 0f32, 0f32);
-    let mut shown = 0;
+    let (mut n, mut dup, mut nf, mut nfr) = (0usize, 0usize, 0f32, 0f32);
     let mut k = 7usize;
+    let mut shown = 0;
     for dlg in &test {
-        for (j, pair) in dlg.windows(2).enumerate() {
-            let (said, real) = (tokens(&pair[0]), tokens(&pair[1]));
-            let before = (j > 0).then(|| tokens(&dlg[j - 1]));
-            let Some((ans, matched, s)) = d.reply(&said, if use_context { before.as_deref() } else { None }) else { continue };
+        for j in 0..dlg.dialog.len().saturating_sub(1) {
+            let (said, real) = (tokens(&dlg.dialog[j]), tokens(&dlg.dialog[j + 1]));
+            if said.is_empty() || real.is_empty() {
+                continue;
+            }
+            let before = (j > 0).then(|| tokens(&dlg.dialog[j - 1]));
+            let r = u.read(&said);
+            let a = crate::understand::ACTS.iter().position(|x| *x == r.act).unwrap();
+            let e = crate::understand::EMOTIONS.iter().position(|x| *x == r.emotion).unwrap();
+            let g = Guide { act: a, emotion: e, answer_act: d.answer_act(a), weight };
+            let Some((ans, matched, s)) = d.reply(&said, before.as_deref(), Some(&g)) else { continue };
             d.recent.clear();
             n += 1;
-            f += f1(&tokens(&ans), &real);
-            liked += s;
             k = (k * 1103515245 + 12345) % 2147483648;
-            let rnd = &d.turns[k % d.len()].0;
-            fr += f1(rnd, &real);
             if s >= 0.9 {
                 dup += 1;
-            } else {
-                nf += f1(&tokens(&ans), &real);
-                nfr += f1(rnd, &real);
+                continue;
             }
-            if shown < 3 && n % 1000 == 1 {
+            nf += f1(&tokens(&ans), &real);
+            nfr += f1(&d.turns[k % d.len()].0, &real);
+            if show && shown < 3 && n % 300 == 1 {
                 shown += 1;
-                println!("  said: {}\n  matched: {matched}  ({s:.2})\n  Darma: {ans}\n  person: {}\n", tidy(&pair[0]), tidy(&pair[1]));
+                println!("  said: {} [{} / {}]\n  matched: {matched} ({s:.2})\n  Darma: {ans}\n  person: {}\n", tidy(&dlg.dialog[j]), r.act, r.emotion, tidy(&dlg.dialog[j + 1]));
             }
         }
     }
-    println!("{n} test turns answered; word overlap with the real answer (F1): Darma {:.3}, a random kept answer {:.3}; mean likeness of the match {:.2}", f / n as f32, fr / n as f32, liked / n as f32);
     let m = (n - dup).max(1) as f32;
-    println!("of them {dup} matched a training turn at 0.9 or more (repeated dialogues); on the other {}: Darma {:.3}, random {:.3}", n - dup, nf / m, nfr / m);
+    if show || weight == 0.0 {
+        println!("{n} turns answered; {dup} matched a training turn at 0.9 or more (repeated, left out); on the other {}: Darma F1 {:.3}, random {:.3}", n - dup, nf / m, nfr / m);
+    }
+    nf / m
 }
