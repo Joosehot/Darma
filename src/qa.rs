@@ -9,7 +9,7 @@
 use crate::eval::{data, train};
 use crate::lexicon::Atoms;
 use crate::quantum::{questions, words_of, Core};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 fn pct(a: usize, b: usize) -> f64 {
@@ -156,17 +156,27 @@ pub struct Talk<'a> {
     copulas: Vec<String>,
     log: std::fs::File,
     pub remembered: usize,
+    /// every sentence told, and in how many of them each word was (what is rare is what tells things apart)
+    said: Vec<Vec<String>>,
+    df: HashMap<String, usize>,
+    by_word: HashMap<String, Vec<usize>>,
+    /// what Darma recalled lately (not said again soon), what it asked and is waiting for, what it asked before
+    recent: Vec<usize>,
+    pending: Option<Vec<String>>,
+    asked: Vec<Vec<String>>,
 }
 
-/// one reply: what Darma says, and on what it stood (empty when it stood on nothing more than the question)
+/// one reply: what Darma says, on what it stood, what it recalls of it, and what it asks back
 pub struct Reply {
     pub said: String,
     pub why: String,
     pub kind: &'static str,
+    pub recall: String,
+    pub ask: String,
 }
 
 impl<'a> Talk<'a> {
-    pub fn new(at: &'a Atoms, memory: &str, fresh: bool) -> Self {
+    pub fn new(at: &'a Atoms, memory: &str, fresh: bool, seed_ud: bool) -> Self {
         let mut core = Core::new(at, None, 0.0);
         // with few things told there is little noise to learn from: the winner must hold over half of the question
         // and stand out by half a match (set by hand, not learned)
@@ -175,10 +185,6 @@ impl<'a> Talk<'a> {
         if fresh {
             let _ = std::fs::remove_file(memory);
         }
-        let kept: Vec<String> = std::fs::read_to_string(memory).map(|s| s.lines().map(String::from).collect()).unwrap_or_default();
-        for line in &kept {
-            core.tell(&words_of(line));
-        }
         // the copulas people marked in UD (seen at least 20 times): what says two things are the same
         let copulas: Vec<String> = std::fs::read_to_string("data/copulas.json")
             .ok()
@@ -186,13 +192,133 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        Talk { core, copulas, log, remembered: kept.len() }
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new() };
+        if seed_ud {
+            // a memory to begin with: every UD training sentence (people's English, news and the web)
+            for s in &data().tagged {
+                talk.learn(&s.words);
+            }
+        }
+        let kept: Vec<String> = std::fs::read_to_string(memory).map(|s| s.lines().map(String::from).collect()).unwrap_or_default();
+        for line in &kept {
+            talk.learn(&words_of(line));
+        }
+        talk.remembered = talk.said.len();
+        talk
+    }
+
+    fn learn(&mut self, w: &[String]) {
+        self.core.tell(w);
+        let i = self.said.len();
+        let mut u: Vec<&String> = w.iter().collect();
+        u.sort();
+        u.dedup();
+        for x in u {
+            *self.df.entry(x.clone()).or_default() += 1;
+            self.by_word.entry(x.clone()).or_default().push(i);
+        }
+        self.said.push(w.to_vec());
+    }
+
+    /// how rare a word is among what was told (log of sentences over sentences with it)
+    fn rarity(&self, x: &str) -> f32 {
+        let n = self.said.len().max(1) as f32;
+        (n / *self.df.get(x).unwrap_or(&1) as f32).ln()
+    }
+
+    /// recalling: the told sentence that shares most with what was just heard, each shared word weighed by how rare
+    /// it is among what was told; a word told in more than half of the sentences ("the") does not count. Not the
+    /// sentence just heard, not one recalled lately.
+    fn recall(&mut self, w: &[String], not: Option<usize>) -> Option<String> {
+        let mut score: HashMap<usize, f32> = HashMap::new();
+        let mut u: Vec<&String> = w.iter().collect();
+        u.sort();
+        u.dedup();
+        for x in u {
+            let r = self.rarity(x);
+            if r < std::f32::consts::LN_2 {
+                continue;
+            }
+            for &i in self.by_word.get(x.as_str()).map(|v| v.as_slice()).unwrap_or(&[]) {
+                *score.entry(i).or_default() += r;
+            }
+        }
+        let best = score
+            .into_iter()
+            .filter(|(i, _)| Some(*i) != not && !self.recent.contains(i) && self.said[*i] != w)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(b.0.cmp(&a.0)))?;
+        self.recent.push(best.0);
+        if self.recent.len() > 5 {
+            self.recent.remove(0);
+        }
+        Some(self.said[best.0].join(" "))
+    }
+
+    /// a sameness told: (what, what it is), from "X is a Y": the word before the copula and the last word
+    fn sameness(&self, s: &[String]) -> Option<(String, String)> {
+        let c = s.iter().position(|x| self.copulas.contains(x))?;
+        if c == 0 || c + 1 >= s.len() {
+            return None;
+        }
+        Some((s[c - 1].clone(), s[s.len() - 1].clone()))
+    }
+
+    /// wondering: where what was just heard and memory meet through a sameness ("rex is a dog" and "the dog
+    /// chased the cat"), what would follow ("rex chased the cat") that Darma does not know yet, nor asked before
+    fn wonder(&mut self, w: &[String]) -> Option<Vec<String>> {
+        let mut pairs: Vec<((String, String), Vec<String>)> = Vec::new();
+        if let Some(xy) = self.sameness(w) {
+            for &i in self.by_word.get(&xy.1).map(|v| v.as_slice()).unwrap_or(&[]) {
+                pairs.push((xy.clone(), self.said[i].clone()));
+            }
+        } else {
+            for t in &self.said {
+                if let Some(xy) = self.sameness(t) {
+                    if w.contains(&xy.1) {
+                        pairs.push((xy, w.to_vec()));
+                    }
+                }
+            }
+        }
+        for ((x, y), t) in pairs {
+            if self.sameness(&t).is_some() {
+                continue;
+            }
+            // the thing it is, said of the other: X in the place of Y, with what was said after Y
+            let Some(k) = t.iter().position(|v| *v == y) else { continue };
+            if k + 1 >= t.len() {
+                continue;
+            }
+            let mut st = vec![x.clone()];
+            st.extend(t[k + 1..].iter().cloned());
+            let known = self.core.verify(&st).is_some_and(|v| v.1 >= 3.0);
+            if !known && !self.asked.contains(&st) {
+                self.asked.push(st.clone());
+                return Some(st);
+            }
+        }
+        None
     }
 
     pub fn line(&mut self, line: &str) -> Reply {
         let w = words_of(line);
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
-        let r = |said: &str, why: String, kind| Reply { said: said.to_string(), why, kind };
+        let r = |said: &str, why: String, kind| Reply { said: said.to_string(), why, kind, recall: String::new(), ask: String::new() };
+        // an answer to what Darma asked: "yes" tells it, "no" lets it go (these two words are a rule, not learned)
+        if let Some(q) = self.pending.take() {
+            match w.first().map(|s| s.as_str()) {
+                Some("yes") => {
+                    self.learn(&q);
+                    use std::io::Write;
+                    let _ = writeln!(self.log, "{}", q.join(" "));
+                    let mut rep = r("kiitos, muistan sen", q.join(" "), "told");
+                    rep.recall = self.recall(&q, None).unwrap_or_default();
+                    return rep;
+                }
+                Some("no") => return r("selvä", format!("not: {}", q.join(" ")), "told"),
+                _ => {}
+            }
+        }
         if w.is_empty() {
             r("", String::new(), "none")
         } else if line.trim_end().ends_with('?') && !hole {
@@ -209,17 +335,24 @@ impl<'a> Talk<'a> {
                 (None, _) => r("en ymmärrä", "nothing I was told stands out as the answer".into(), "unknown"),
             }
         } else {
-            self.core.tell(&w);
+            let i = self.said.len();
+            self.learn(&w);
             use std::io::Write;
             let _ = writeln!(self.log, "{}", w.join(" "));
-            r("muistan", format!("{} things told", self.core.told), "told")
+            let mut rep = r("muistan", format!("{} things told", self.core.told), "told");
+            rep.recall = self.recall(&w, Some(i)).unwrap_or_default();
+            if let Some(q) = self.wonder(&w) {
+                rep.ask = format!("{}?", q.join(" "));
+                self.pending = Some(q);
+            }
+            rep
         }
     }
 }
 
 pub fn chat(dim: usize, seed: u64, memory: &str, fresh: bool) {
     let at = Atoms::new(dim, seed);
-    let mut talk = Talk::new(&at, memory, fresh);
+    let mut talk = Talk::new(&at, memory, fresh, false);
     println!("Darma listens ({} things remembered from before, in {memory}). Tell it things (\"the dog chased the cat\"); ask with who or what (\"who chased the cat\") or end with ? (\"the dog chased the cat?\"). Empty line ends.", talk.remembered);
     for line in std::io::stdin().lines() {
         let line = line.unwrap();
@@ -232,14 +365,20 @@ pub fn chat(dim: usize, seed: u64, memory: &str, fresh: bool) {
         } else {
             println!("Darma: {}      ({})", rep.said, rep.why);
         }
+        if !rep.recall.is_empty() {
+            println!("       ({})", rep.recall);
+        }
+        if !rep.ask.is_empty() {
+            println!("Darma: {}", rep.ask);
+        }
     }
 }
 
 /// the chat page (`darma serve`): the same conversation in a browser, at http://localhost:PORT
-pub fn serve(dim: usize, seed: u64, memory: &str, port: u16) {
+pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
     use std::io::{Read, Write};
     let at = Atoms::new(dim, seed);
-    let mut talk = Talk::new(&at, memory, false);
+    let mut talk = Talk::new(&at, memory, false, seed_ud);
     let page = include_str!("chat.html");
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("port in use");
     println!("Darma: http://localhost:{port}  ({} things remembered, in {memory})", talk.remembered);
@@ -269,7 +408,7 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16) {
         };
         let (ctype, out) = if head.starts_with("POST /say") {
             let rep = talk.line(body.trim());
-            let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "told": talk.core.told});
+            let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "recall": rep.recall, "ask": rep.ask, "told": talk.core.told});
             ("application/json", j.to_string())
         } else if head.starts_with("GET /state") {
             ("application/json", serde_json::json!({"told": talk.core.told, "memory": memory}).to_string())

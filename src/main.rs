@@ -47,6 +47,9 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "darma_memory.txt")]
         memory: String,
+        /// begin with every UD training sentence in memory
+        #[arg(long)]
+        seed_ud: bool,
     },
     /// senses as measurements: which sense does memory hold in this place?
     QaSenses,
@@ -82,7 +85,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
-        Cmd::Serve { port, memory } => qa::serve(cli.dim, cli.seed, &memory, port),
+        Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {
             let d = eval::data();

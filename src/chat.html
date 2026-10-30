@@ -39,6 +39,13 @@
   .darma.no .said { color: var(--no); }
   .darma.unknown .said { color: var(--unknown); }
   .darma.told .said { color: var(--told); font-weight: 500; }
+  .darma .recall { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .darma .recall span { color: var(--muted); font-size: 13px; display: block; }
+  .darma.ask { border-color: var(--accent); }
+  .darma.ask .said { color: var(--accent); }
+  .answers { display: flex; gap: 6px; margin-top: 8px; }
+  .answers button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+  .answers button:hover { border-color: var(--accent); }
   form { display: flex; gap: 8px; padding: 12px 0 20px; border-top: 1px solid var(--line); }
   input { flex: 1; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; outline: none; }
   input:focus { border-color: var(--accent); }
@@ -56,6 +63,7 @@
     <b>Kerro</b> asioita englanniksi: <i>the dog chased the cat</i>.
     <b>Kysy</b> sanoilla <i>who</i> tai <i>what</i>: <i>who chased the cat</i>, <i>the dog chased what</i>.
     <b>Kyllä vai ei</b>: lopeta kysymysmerkkiin, <i>the dog chased the cat?</i>
+    Darma kertoo, mitä se muistaa samasta asiasta, ja kysyy itse, kun sen tieto jättää aukon: vastaa <i>yes</i> tai <i>no</i>.
   </div>
   <div class="chips" id="chips"></div>
   <div id="log" aria-live="polite"></div>
@@ -65,7 +73,7 @@
   </form>
 </div>
 <script>
-const examples = ["rex is a dog", "the dog chased the cat", "rex chased what", "who chased the cat", "rex chased the cat?", "the cat chased the dog?"];
+const examples = ["the dog chased the cat", "rex is a dog", "rex chased what", "who chased the cat", "the cat chased the dog?"];
 const log = document.getElementById("log"), q = document.getElementById("q"), send = document.getElementById("send"), state = document.getElementById("state");
 const setState = n => { state.textContent = n === 1 ? "muistaa 1 asian" : `muistaa ${n} asiaa`; };
 for (const e of examples) {
@@ -74,30 +82,52 @@ for (const e of examples) {
   c.onclick = () => { q.value = e; q.focus(); };
   document.getElementById("chips").appendChild(c);
 }
-function add(cls, said, why) {
+function add(cls, said, why, recall) {
   const d = document.createElement("div");
   d.className = "msg " + cls;
   if (cls.startsWith("darma")) {
     const s = document.createElement("div"); s.className = "said"; s.textContent = said; d.appendChild(s);
     if (why) { const w = document.createElement("div"); w.className = "why"; w.textContent = why; d.appendChild(w); }
+    if (recall) {
+      const r = document.createElement("div"); r.className = "recall";
+      const l = document.createElement("span"); l.textContent = "tästä muistan:"; r.appendChild(l);
+      r.appendChild(document.createTextNode(recall)); d.appendChild(r);
+    }
   } else d.textContent = said;
   log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+function askBubble(question) {
+  const d = add("darma ask", question, "Darma kysyy");
+  const a = document.createElement("div"); a.className = "answers";
+  for (const word of ["yes", "no"]) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = word;
+    b.onclick = () => { a.remove(); say(word); };
+    a.appendChild(b);
+  }
+  d.appendChild(a);
 }
 fetch("/state").then(r => r.json()).then(j => setState(j.told)).catch(() => state.textContent = "ei yhteyttä");
-document.getElementById("f").onsubmit = async ev => {
-  ev.preventDefault();
-  const text = q.value.trim();
-  if (!text) return;
-  add("me", text); q.value = ""; send.disabled = true;
+async function say(text) {
+  document.querySelectorAll(".answers").forEach(x => x.remove());
+  add("me", text); send.disabled = true;
   try {
     const r = await fetch("/say", { method: "POST", body: text });
     const j = await r.json();
-    add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why);
+    add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why, j.recall);
+    if (j.ask) askBubble(j.ask);
     setState(j.told);
   } catch (e) {
     add("darma unknown", "yhteys katkesi", "onko darma serve käynnissä?");
   }
   send.disabled = false; q.focus();
+}
+document.getElementById("f").onsubmit = ev => {
+  ev.preventDefault();
+  const text = q.value.trim();
+  if (!text) return;
+  q.value = "";
+  say(text);
 };
 </script>
 </body>
