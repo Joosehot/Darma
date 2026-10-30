@@ -21,6 +21,11 @@ pub const LOOSE_AT: f32 = 0.2;
 /// how much the conversation so far weighs: likeness of the turn before a kept turn to what Darma said last (set by
 /// hand)
 pub const CONTEXT: f32 = 0.5;
+/// the dimension of the words' meaning waves, and how far a word's neighbours reach (each side)
+pub const MEANING_D: usize = 256;
+pub const MEANING_WINDOW: usize = 2;
+/// how much two lines' resonance in meaning weighs beside their shared runs (chosen on the validation split)
+pub const RESONANCE: f32 = 0.3;
 
 /// what understanding gives the choice: the act and emotion read in the line, the act people answer that act with,
 /// and how much this weighs beside likeness
@@ -69,7 +74,19 @@ pub struct Dialog {
     recent: Vec<usize>,
     /// a buffer for summing scores, reused by every query
     scratch: std::cell::RefCell<Vec<f32>>,
+    /// every word's meaning: a wave made of its neighbours in people's conversations (one pass), what all words share
+    /// taken away; words used alike have waves alike
+    meaning: HashMap<String, crate::vector::HVec>,
+    pub resonance: f32,
+    /// each word's nearest meanings, found when first asked (a cache)
+    nearest_words: std::cell::RefCell<HashMap<String, Vec<(String, f32)>>>,
+    /// whether a line's words also bring in the turns of the words nearest in meaning
+    pub widen: bool,
 }
+
+/// how near in meaning a word must be to bring in its turns, and how many it may bring (set by hand)
+pub const WIDEN_AT: f32 = 0.45;
+pub const WIDEN_N: usize = 3;
 
 /// a turn's sentences (DailyDialog spaces its marks: "Hello , darling ! Did you ...?")
 pub fn sentences(text: &str) -> Vec<String> {
@@ -206,7 +223,34 @@ impl Dialog {
             })
             .collect();
         let follow_words: Vec<String> = follow.iter().map(|f| f.as_deref().map(|s| tokens(s).join(" ")).unwrap_or_default()).collect();
-        Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default() })
+        // meanings: one pass over every sentence; each word (met at least three times) gathers its neighbours' atoms,
+        // each weighed by how rare the neighbour is
+        let atoms = crate::lexicon::Atoms::new(MEANING_D, 7);
+        let mut meaning: HashMap<String, crate::vector::HVec> = HashMap::new();
+        for (w, _, _, _) in &units {
+            for (i, x) in w.iter().enumerate() {
+                if df.get(x).map_or(true, |c| *c < 3) {
+                    continue;
+                }
+                let m = meaning.entry(x.clone()).or_insert_with(|| crate::vector::HVec::zero(MEANING_D));
+                for j in i.saturating_sub(MEANING_WINDOW)..(i + MEANING_WINDOW + 1).min(w.len()) {
+                    if j != i {
+                        m.add_scaled(&atoms.word(&w[j]), idf(&w[j]));
+                    }
+                }
+            }
+        }
+        let mut mean = crate::vector::HVec::zero(MEANING_D);
+        for v in meaning.values_mut() {
+            *v = crate::memory::normalised(v.clone());
+            mean.add(v);
+        }
+        let k = 1.0 / meaning.len().max(1) as f32;
+        for v in meaning.values_mut() {
+            v.add_scaled(&mean, -k);
+            *v = crate::memory::normalised(v.clone());
+        }
+        Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default(), meaning, resonance: RESONANCE, nearest_words: Default::default(), widen: true })
     }
 
     fn idf(&self, r: &str) -> f32 {
@@ -246,6 +290,26 @@ impl Dialog {
     ///   the topic: the rarest known word of what was said; a turn holding it is looked for first, and taken if it is
     ///              alike enough (TALK_AT), so "what do you think about dogs" stays with dogs;
     ///   the conversation: a turn whose own turn before is like what Darma said last gains CONTEXT times that likeness.
+    /// a line's state in meaning: its words' meaning waves superposed, each weighed by how rare the word is
+    pub fn meaning_state(&self, words: &[String]) -> crate::vector::HVec {
+        let mut s = crate::vector::HVec::zero(MEANING_D);
+        for w in words {
+            if let Some(m) = self.meaning.get(w) {
+                s.add_scaled(m, self.idf(w));
+            }
+        }
+        s
+    }
+
+    /// the words whose meanings are nearest to a word's (for looking at what was learned)
+    pub fn near(&self, w: &str, k: usize) -> Vec<(String, f32)> {
+        let Some(v) = self.meaning.get(w) else { return Vec::new() };
+        let mut s: Vec<(String, f32)> = self.meaning.iter().filter(|(x, _)| x.as_str() != w).map(|(x, m)| (x.clone(), v.sim(m))).collect();
+        s.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        s.truncate(k);
+        s
+    }
+
     /// the act people most often answer this act with
     pub fn answer_act(&self, act: usize) -> usize {
         (0..4).max_by_key(|&i| self.act_after[act][i]).unwrap_or(0)
@@ -287,6 +351,28 @@ impl Dialog {
                 buf[i as usize] += w;
             }
         }
+        // the words nearest in meaning bring in their turns too (weighed by how near): "exhausted" finds "tired"
+        if self.widen {
+            for w in words {
+                let near = {
+                    let mut cache = self.nearest_words.borrow_mut();
+                    cache.entry(w.clone()).or_insert_with(|| self.near(w, WIDEN_N).into_iter().filter(|x| x.1 >= WIDEN_AT).collect()).clone()
+                };
+                for (x, s) in near {
+                    let Some(ids) = self.index.get(&x) else { continue };
+                    if ids.len() > self.units.len() / 10 {
+                        continue;
+                    }
+                    let wgt = s * self.idf(&x).powi(2);
+                    for &i in ids {
+                        if buf[i as usize] == 0.0 {
+                            touched.push(i);
+                        }
+                        buf[i as usize] += wgt;
+                    }
+                }
+            }
+        }
         let score: Vec<(u32, f32)> = touched.iter().map(|&i| (i, std::mem::take(&mut buf[i as usize]))).collect();
         drop(buf);
         let mut cands: Vec<(usize, f32)> = score
@@ -315,13 +401,17 @@ impl Dialog {
         cands.retain(|(i, _)| !self.echoes(*i, &said));
         cands.truncate(300);
         let ctx = context.map(|c| self.known_runs(c));
+        // the line's state in meaning, to resonate with each candidate's
+        let qm = self.meaning_state(words);
+        let res = self.resonance;
         let total = |&(i, s): &(usize, f32)| -> f32 {
             let c = match (&ctx, self.unit_prev[i]) {
                 (Some((cq, cn)), Some(p)) => CONTEXT * self.cos_to(cq, *cn, p),
                 _ => 0.0,
             };
             let g = guide.map_or(0.0, |g| g.weight * self.fits(i, g));
-            s + c + g
+            let m = if res > 0.0 { res * qm.sim(&self.meaning_state(&self.units[i].0)).max(0.0) } else { 0.0 };
+            s + c + g + m
         };
         let pick = |set: Vec<&(usize, f32)>| -> Option<(usize, f32)> {
             set.into_iter()
@@ -415,6 +505,16 @@ pub fn eval(limit: usize) {
     let Some((u, loaded)) = crate::understand::strike_or_load(&at) else { return println!("download DailyDialog first") };
     let Some(mut d) = Dialog::load("data/raw/dailydialog/train_marked.json") else { return println!("download DailyDialog first") };
     println!("ready in {:.1} s (understanding {}, the dialogue memory built)", t0.elapsed().as_secs_f64(), if loaded { "loaded" } else { "struck and saved" });
+    if std::env::var("DARMA_CHOOSE").is_ok() {
+        for (w, widen) in [(0.0f32, false), (0.6, false), (0.6, true), (1.0, true)] {
+            d.resonance = w;
+            d.widen = widen;
+            print!("  widened by meaning {widen}: ");
+            let f = eval_once(&mut d, &u, "data/raw/dailydialog/validation_marked.json", GUIDE, false, limit);
+            println!("  validation, resonance in meaning weighs {w}: F1 {f:.3}");
+        }
+        return;
+    }
     let t1 = std::time::Instant::now();
     eval_once(&mut d, &u, "data/raw/dailydialog/test_marked.json", GUIDE, true, limit);
     println!("asked in {:.1} s", t1.elapsed().as_secs_f64());
@@ -458,7 +558,7 @@ fn eval_once(d: &mut Dialog, u: &crate::understand::Understanding, path: &str, w
         }
     }
     let m = (n - dup).max(1) as f32;
-    if show || weight == 0.0 {
+    if show {
         println!("{n} turns answered; {dup} matched a training turn at 0.9 or more (repeated, left out); on the other {}: Darma F1 {:.3}, random {:.3}", n - dup, nf / m, nfr / m);
     }
     nf / m

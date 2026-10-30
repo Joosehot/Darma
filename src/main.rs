@@ -80,6 +80,8 @@ enum Cmd {
         #[arg(long)]
         fresh: bool,
     },
+    /// the words whose meanings in people's conversations are nearest
+    NearTalk { words: Vec<String> },
     /// the words whose meanings are nearest to these words' meanings
     Near { words: Vec<String> },
 }
@@ -111,6 +113,12 @@ fn main() {
             }
         }
         Cmd::DialogEval { dialogues } => dialog::eval(dialogues),
+        Cmd::NearTalk { words } => {
+            let d = dialog::Dialog::load("data/raw/dailydialog/train_marked.json").expect("download DailyDialog first");
+            for w in words {
+                println!("{w}: {}", d.near(&w, 8).iter().map(|(x, s)| format!("{x} {s:.2}")).collect::<Vec<_>>().join(", "));
+            }
+        }
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
         Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
