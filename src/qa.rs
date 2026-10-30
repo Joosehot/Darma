@@ -317,12 +317,23 @@ impl<'a> Talk<'a> {
         let world = &self.core;
         let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
         let test = |ans: &str| me.names_a_stranger(ans, &known).or_else(|| me.contradicts(&words_of(ans)));
-        let (ans, matched, s, let_go) = self.dialog.as_mut()?.reply_where(w, last.as_deref(), &test)?;
+        let d = self.dialog.as_mut()?;
+        let found = d.reply_where(w, last.as_deref(), &test).filter(|x| x.2 >= crate::dialog::LOOSE_AT);
+        let Some((ans, matched, s, let_go)) = found else {
+            // nothing people said is like it: it asks back, as people most often did (the first of their questions
+            // back it did not ask just now)
+            let said_last = last.map(|l| l.join(" ")).unwrap_or_default();
+            let back = d.ask_back.iter().find(|b| words_of(b).join(" ") != said_last).cloned()?;
+            return Some(Reply { said: back, why: "nothing people said is like this; I ask, as people most often asked back".into(), kind: "talk", recall: String::new(), ask: String::new() });
+        };
         let mut why = format!("people answered this to: \"{matched}\" ({s:.2})");
+        if s < TALK_AT {
+            why.push_str("; a loose match");
+        }
         if !let_go.is_empty() {
             why.push_str(&format!("; not as myself: {}", let_go.join("; ")));
         }
-        (s >= TALK_AT).then(|| Reply { said: ans, why, kind: "talk", recall: String::new(), ask: String::new() })
+        Some(Reply { said: ans, why, kind: "talk", recall: String::new(), ask: String::new() })
     }
 
     pub fn line(&mut self, line: &str) -> Reply {

@@ -13,6 +13,8 @@ use std::collections::HashMap;
 pub const RUN: usize = 3;
 /// how alike a kept turn must be to what was said for Darma to answer as people did (a cosine; set by hand)
 pub const TALK_AT: f32 = 0.3;
+/// below this, a match is too far to answer by; Darma asks back instead (set by hand)
+pub const LOOSE_AT: f32 = 0.2;
 /// how much the conversation so far weighs: likeness of the turn before a kept turn to what Darma said last (set by
 /// hand)
 pub const CONTEXT: f32 = 0.5;
@@ -27,6 +29,8 @@ pub struct Dialog {
     openers: HashMap<String, (u32, u32)>,
     /// of people's questions opening with each word: how many were answered with yes or no, of how many
     yes_no: HashMap<String, (u32, u32)>,
+    /// what people most often answered with a question of their own (what they say when they need more to go on)
+    pub ask_back: Vec<String>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
@@ -89,6 +93,19 @@ impl Dialog {
                 }
             }
         }
+        // the answers that were themselves questions, most common first ("Why?", "What do you mean?")
+        let mut back: HashMap<String, u32> = HashMap::new();
+        for (_, _, next) in &turns {
+            if let Some(n) = next {
+                let a = tidy(&turns[*n].1);
+                if a.ends_with('?') && a.split_whitespace().count() <= 4 {
+                    *back.entry(a).or_default() += 1;
+                }
+            }
+        }
+        let mut ask_back: Vec<(String, u32)> = back.into_iter().collect();
+        ask_back.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let ask_back: Vec<String> = ask_back.into_iter().take(8).map(|x| x.0).collect();
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         let mut df: HashMap<String, u32> = HashMap::new();
         for (i, (w, _, _)) in turns.iter().enumerate() {
@@ -100,7 +117,7 @@ impl Dialog {
         let n = turns.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
         let norm = turns.iter().map(|(w, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, prev, openers, yes_no, index, df, norm, recent: Vec::new() })
+        Some(Dialog { turns, prev, openers, yes_no, ask_back, index, df, norm, recent: Vec::new() })
     }
 
     fn idf(&self, r: &str) -> f32 {
