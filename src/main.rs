@@ -11,6 +11,7 @@ mod me;
 mod memory;
 mod qa;
 mod quantum;
+mod understand;
 mod vector;
 
 use clap::{Parser, Subcommand};
@@ -55,6 +56,10 @@ enum Cmd {
     },
     /// conversation from people's conversations: DailyDialog's test dialogues against Darma's answers
     DialogEval,
+    /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
+    UnderstandEval,
+    /// how Darma reads lines: their act and emotion
+    Read { lines: Vec<String> },
     /// senses as measurements: which sense does memory hold in this place?
     QaSenses,
     /// talk: tell Darma things and ask it with who/what
@@ -88,6 +93,16 @@ fn main() {
         Cmd::Qa => qa::run(cli.dim, cli.seed),
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
+        Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::Read { lines } => {
+            let at = lexicon::Atoms::new(cli.dim, cli.seed);
+            let u = understand::learn_and_choose(&at).expect("download DailyDialog first");
+            for l in lines {
+                let r = u.read(&lexicon::tokens(&l));
+                let top = |v: &[(&str, f32)]| v.iter().take(3).map(|(n, s)| format!("{n} {s:.3}")).collect::<Vec<_>>().join(", ");
+                println!("{l:<40} act: {:<11} ({})   emotion: {:<10} ({})", r.act, top(&r.act_scores), r.emotion, top(&r.emotion_scores));
+            }
+        }
         Cmd::DialogEval => dialog::eval("data/raw/dailydialog/train.json", "data/raw/dailydialog/test.json"),
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
         Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),

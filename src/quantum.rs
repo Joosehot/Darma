@@ -66,7 +66,7 @@ impl<'a> Core<'a> {
     }
 
     /// the state a run of words makes: each word turns the state after one step of order
-    fn run(&self, words: &[String]) -> HVec {
+    pub fn run(&self, words: &[String]) -> HVec {
         let mut s = self.vacuum.clone();
         for w in words {
             s = s.shift().bind(&self.op(w));

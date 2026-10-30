@@ -246,3 +246,25 @@ Isompi dimensio ei yksin auta. Kun rekisterit tarkentuvat, myös aidot osittaise
 **Kokeiltu ja hylätty:**
 - **Parirekisterit.** Lause lomitettiin myös vierekkäisten sanaparien kanssa. Mittakaavakokeen tulos heikkeni 58 %:sta 12 %:iin, koska opittu raja nousi 0,85:een. Muutos peruttiin.
 - **Merkitykset mittauksena, `qa-senses`.** CoarseWSD:n harjoituslauseet kerrottiin niin, että monimerkityksinen sana oli korvattu merkityksellään, ja testissä merkitys mitattiin aukkona. Oikein meni 49,1 %, kun vanha interferenssi saa 86,6 % ja yleisin merkitys 73,4 %. Uusi ydin muistaa tarkkoja sanajonoja, mutta merkityksen valinta vaatii yleistämistä lähiympäristöstä. Lisäksi 33 % jäi mittaamatta, koska ikkunassa oli uusi sana. Merkityksen valinta jää siksi lauseen sanojen superpositioksi, jota verrataan merkitysten konteksteihin. Sekin on interferenssimittaus, mutta eri kannassa.
+
+## Kohti ymmärrystä: teko ja tunne
+
+Keskustelukerros kopioi ihmisten vastauksia, ja omistajan tavoite on, että Darma ymmärtää eikä kopioi. Ensimmäinen askel on ymmärtää, mitä repliikki tekee ja mitä se tuntee.
+
+DailyDialogin ihmiset ovat merkinneet jokaiseen vuoroon teon (kertominen, kysymys, pyyntö, lupaus) ja tunteen (ei tunnetta, viha, inho, pelko, ilo, suru, yllätys). Darma oppii ne yhdellä läpikäynnillä:
+- **Vuoron tila** on sen 1–2 sanan jonojen tilojen summa. Jonot muodostetaan samoilla vaiheoperaattoreilla kuin ytimessä, ja harvinaiset jonot painavat enemmän.
+- **Jokaisen teon ja tunteen prototyyppi** on sen vuorojen tilojen keskiarvo, josta on vähennetty kaikkien vuorojen yhteinen osa.
+- **Uusi repliikki luetaan** sen prototyypin mukaan, jonka kanssa se resonoi vahvimmin. Luokan yleisyys painaa mukana. Painon suuruus valitaan validointiosalla, ja testiosalla mitataan vain kerran.
+
+Merkintöjä käytetään vain ymmärtämisen opetteluun, eikä mitään vastausta kopioida.
+
+| Testiosa, D 4 096 | Tarkkuus | Pelkkä yleisin luokka | F1-keskiarvo | Pelkkä yleisin luokka, F1 |
+|---|---|---|---|---|
+| Teko, 4 luokkaa, n 7 734 | 68,3 % | 45,6 % | 0,616 | 0,157 |
+| Tunne, 7 luokkaa | 78,0 % | 81,7 % | 0,329 | 0,128 |
+
+Dimensiolla 1 024 teon tarkkuus oli 63,9 % ja F1 0,575, tunteiden F1 0,320. Tunteiden tarkkuus jää yleisimmän luokan alle, koska 83 % vuoroista on tunteettomia. F1-keskiarvo on kuitenkin 2,6-kertainen. Yksittäisistä luokista ilo tunnistuu parhaiten, F1 0,45. Harvinaiset tunteet, kuten inho, jossa testivuoroja on vain 47, tunnistuvat heikosti.
+
+Ensimmäisen kokeilun painot valitsin katsomalla testiosan tuloksia. Se oli vuoto, ja se korjattiin: luvut yllä on mitattu validointiosalla valituilla painoilla.
+
+`cargo run --release -- --dim 4096 read "I'm so sad, my dog died"` näyttää, miten Darma lukee lauseen.
