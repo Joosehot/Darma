@@ -40,6 +40,8 @@ pub struct SenseCase {
 pub struct Tagged {
     pub words: Vec<String>,
     pub roles: Vec<String>,
+    /// for an agent or patient: the position (in `words`) of the verb it belongs to; -1 otherwise
+    pub heads: Vec<i64>,
 }
 
 #[derive(Serialize)]
@@ -117,6 +119,8 @@ fn tagged(path: &Path) -> Vec<Tagged> {
         let verb = |h: usize| h > 0 && toks.get(h - 1).is_some_and(|t| t.upos == "VERB");
         let mut words = Vec::new();
         let mut roles = Vec::new();
+        let mut head_tok: Vec<usize> = Vec::new();
+        let mut first_piece: Vec<i64> = vec![-1; toks.len()];
         for (i, t) in toks.iter().enumerate() {
             // only letters, split as Darma splits a sentence (so the words line up with what it reads)
             let role = if t.rel == "nsubj" && t.upos == "NOUN" && verb(t.head) {
@@ -129,12 +133,17 @@ fn tagged(path: &Path) -> Vec<Tagged> {
                 "-"
             };
             for piece in t.form.split(|c: char| !c.is_alphabetic()).filter(|x| !x.is_empty()) {
+                if first_piece[i] < 0 {
+                    first_piece[i] = words.len() as i64;
+                }
                 words.push(piece.to_string());
                 roles.push(role.to_string());
+                head_tok.push(if role == "A" || role == "P" { t.head } else { 0 });
             }
         }
+        let heads: Vec<i64> = head_tok.iter().map(|&h| if h > 0 { first_piece[h - 1] } else { -1 }).collect();
         if !words.is_empty() {
-            out.push(Tagged { words, roles });
+            out.push(Tagged { words, roles, heads });
         }
     }
     out

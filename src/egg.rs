@@ -99,8 +99,8 @@ pub fn understand(m: &Memory, at: &Atoms, lex: &Lexicon, sentence: &str) -> Path
     }
     // 3. fertilisation, the strongest first
     for (k, st) in &inside {
-        let (ok, margin) = m.read_back(at, st, &sperm[*k].fill, &words, None);
-        let pass = ok && margin >= m.fertile;
+        let (_, margin) = m.read_back(at, st, &sperm[*k].fill, &words, None);
+        let pass = margin >= m.fertile;
         path.tried.push((sperm[*k].fill.join(" / "), pass, margin));
         if pass {
             path.answer = Some(sperm[*k].fill.clone());

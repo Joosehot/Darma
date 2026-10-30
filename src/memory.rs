@@ -42,12 +42,14 @@ pub struct SenseCase {
 pub struct Tagged {
     pub words: Vec<String>,
     pub roles: Vec<String>,
+    pub heads: Vec<i64>,
 }
 
 /// the four things a word can be in a clause: agent, action, patient, or none of them
 pub const ROLE_TAGS: [&str; 4] = ["A", "V", "P", "-"];
 pub const SYNTAX_WINDOW: usize = 2;
 pub const DIST_MAX: usize = 8;
+pub const MEANING_WINDOW: usize = 3;
 
 pub const ORDERS: [&str; 6] = ["AVP", "APV", "VAP", "VPA", "PAV", "PVA"];
 
@@ -60,6 +62,15 @@ pub struct Memory {
     pub word_roles: HashMap<String, HVec>,
     /// the neighbourhood each role has (the words around it), for words never seen
     pub role_ctx: [HVec; 4],
+    /// what each verb was done by and done to, and what each noun did and underwent (bundles of atoms, from every
+    /// marked pair of the training sentences): the memory fertilisation merges a reading with
+    pub agents_of: HashMap<String, Vec<String>>,
+    pub patients_of: HashMap<String, Vec<String>>,
+    pub did: HashMap<String, Vec<String>>,
+    pub underwent: HashMap<String, Vec<String>>,
+    /// every word's meaning: the bundle of its neighbours' atoms over all the text read (UD and CoarseWSD), each
+    /// neighbour weighted by how rare it is; words used alike get alike meanings
+    pub meaning: HashMap<String, HVec>,
     /// how far apart agent and action, action and patient were
     pub dist: [HVec; 2],
     pub idf: HashMap<String, f32>,
@@ -108,6 +119,11 @@ impl Memory {
             order: HVec::zero(d),
             contexts: HashMap::new(),
             word_roles: HashMap::new(),
+            agents_of: HashMap::new(),
+            patients_of: HashMap::new(),
+            did: HashMap::new(),
+            underwent: HashMap::new(),
+            meaning: HashMap::new(),
             role_ctx: [HVec::zero(d), HVec::zero(d), HVec::zero(d), HVec::zero(d)],
             dist: [HVec::zero(d), HVec::zero(d)],
             idf: HashMap::new(),
@@ -141,6 +157,12 @@ impl Memory {
                 if r < 3 {
                     *m.role_count[r].entry(w.clone()).or_default() += 1;
                 }
+                if (r == 0 || r == 2) && s.heads[i] >= 0 {
+                    let v = &s.words[s.heads[i] as usize];
+                    let (of_verb, of_noun) = if r == 0 { (&mut m.agents_of, &mut m.did) } else { (&mut m.patients_of, &mut m.underwent) };
+                    of_verb.entry(v.clone()).or_default().push(w.clone());
+                    of_noun.entry(w.clone()).or_default().push(v.clone());
+                }
             }
         }
         // how rare each word is among the sense sentences
@@ -155,21 +177,63 @@ impl Memory {
         }
         let n = senses.len().max(1) as f32;
         m.idf = df.into_iter().map(|(w, c)| (w, (n / c as f32).ln())).collect();
+        // meanings: one pass over all the text, each word gets its neighbours (MEANING_WINDOW each side) by rarity
+        {
+            // raw text read for meanings only (no marks): WikiText-103, if downloaded
+            let wiki: Vec<Vec<String>> = std::fs::read_to_string("data/raw/wikitext/text.txt").map(|s| s.lines().map(tokens).collect()).unwrap_or_default();
+            let mut udf: HashMap<&str, u32> = HashMap::new();
+            for words in &wiki {
+                let mut u: Vec<&str> = words.iter().map(|x| x.as_str()).collect();
+                u.sort();
+                u.dedup();
+                for w in u {
+                    *udf.entry(w).or_default() += 1;
+                }
+            }
+            for s in tagged {
+                let mut u: Vec<&str> = s.words.iter().map(|x| x.as_str()).collect();
+                u.sort();
+                u.dedup();
+                for w in u {
+                    *udf.entry(w).or_default() += 1;
+                }
+            }
+            let un = (tagged.len() + wiki.len()) as f32;
+            let rare = |w: &str| (un / *udf.get(w).unwrap_or(&1) as f32).ln();
+            let sense_words: Vec<Vec<String>> = senses.iter().map(|s| tokens(&s.sentence)).collect();
+            for words in tagged.iter().map(|s| &s.words).chain(sense_words.iter()).chain(wiki.iter()) {
+                for (i, w) in words.iter().enumerate() {
+                    if !m.word_roles.contains_key(w) {
+                        continue;
+                    }
+                    let e = m.meaning.entry(w.clone()).or_insert_with(|| HVec::zero(d));
+                    for j in i.saturating_sub(MEANING_WINDOW)..(i + MEANING_WINDOW + 1).min(words.len()) {
+                        if j != i {
+                            e.add_scaled(&at.word(&words[j]), rare(&words[j]));
+                        }
+                    }
+                }
+            }
+            for v in m.meaning.values_mut() {
+                *v = normalised(v.clone());
+            }
+            // what all meanings share (the common direction every word has, from the commonest neighbours) is taken
+            // away, so that likeness says how a word differs, not that it is a word
+            let mut mean = HVec::zero(d);
+            for v in m.meaning.values() {
+                mean.add(v);
+            }
+            let k = 1.0 / m.meaning.len().max(1) as f32;
+            for v in m.meaning.values_mut() {
+                v.add_scaled(&mean, -k);
+                *v = normalised(v.clone());
+            }
+        }
         for s in senses {
             let ctx = m.context(at, &s.sentence.split(' ').map(String::from).collect::<Vec<_>>(), s.index);
             m.contexts.entry(s.sense.clone()).or_insert_with(|| HVec::zero(d)).add(&ctx);
             *m.sense_count.entry(s.word.clone()).or_default().entry(s.sense.clone()).or_default() += 1;
         }
-        // the thresholds, each a low quantile over the known clauses, each clause left out of its own memory
-        let mut comp = Vec::new();
-        let mut marg = Vec::new();
-        for (i, (s, g)) in m.structures.iter().enumerate() {
-            let others = m.structures.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| &x.0);
-            comp.push(others.map(|o| s.sim(o)).fold(f32::MIN, f32::max));
-            let words: Vec<String> = tokens(&clauses[i].sentence);
-            marg.push(m.read_back(at, s, g, &words, Some(i)).1);
-        }
-        let _ = comp;
         // the membrane's threshold against chance: random readings of training sentences (three different words in
         // the three roles); a reading must fit its roles better than 1 - q of them
         {
@@ -188,6 +252,20 @@ impl Memory {
             }
             m.membrane = quantile(chance, 1.0 - q);
         }
+        // the thresholds, each a low quantile over the known clauses, each clause left out of its own memory
+        let mut comp = Vec::new();
+        let mut marg = Vec::new();
+        for (i, (s, g)) in m.structures.iter().enumerate() {
+            let others = m.structures.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| &x.0);
+            comp.push(others.map(|o| s.sim(o)).fold(f32::MIN, f32::max));
+            let words: Vec<String> = tokens(&clauses[i].sentence);
+            let (spoke, mg) = m.read_back(at, s, g, &words, Some(i));
+            if spoke && mg < f32::MAX {
+                marg.push(mg);
+            }
+        }
+        let _ = comp;
+
         m.fertile = quantile(marg, q);
         m
     }
@@ -272,23 +350,94 @@ impl Memory {
         r
     }
 
-    /// fertilisation's self-test: merge the structure with what memory recalls, unbind each role, measure it
-    /// against the sentence's words. Returns whether every role reads back its own filler, and the smallest margin
-    /// (best minus runner-up) over the three roles.
-    pub fn read_back(&self, at: &Atoms, s: &HVec, f: &[String; 3], words: &[String], skip: Option<usize>) -> (bool, f32) {
-        let mut state = s.clone();
-        state.add(&normalised(self.recall(s, skip)));
-        let mut uniq: Vec<&String> = words.iter().collect();
-        uniq.sort();
-        uniq.dedup();
-        let atoms: Vec<(String, HVec)> = uniq.iter().map(|w| (w.to_string(), at.word(w))).collect();
-        let (mut all, mut least) = (true, f32::MAX);
-        for r in 0..3 {
-            let q = state.unbind(&at.role(r));
-            let (k, s1, s2) = crate::vector::cleanup(&q, atoms.iter().map(|(w, v)| (w.clone(), v))).unwrap();
-            all &= k == f[r];
-            least = least.min(if atoms.len() > 1 { s1 - s2 } else { s1 });
+    /// the k keys of a memory whose meanings are most like the word's (with their likeness, only positive ones)
+    pub fn alike_keys(&self, at: &Atoms, map: &HashMap<String, Vec<String>>, w: &str, k: usize) -> Vec<(String, f32)> {
+        let v = self.meaning_of(at, w);
+        let mut s: Vec<(String, f32)> = map.keys().filter_map(|key| self.meaning.get(key).map(|m| (key.clone(), v.sim(m)))).filter(|x| x.1 > 0.0).collect();
+        s.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        s.truncate(k);
+        s
+    }
+
+    /// a word's meaning (its own atom if it was never read: then it is like nothing else)
+    pub fn meaning_of(&self, at: &Atoms, w: &str) -> HVec {
+        self.meaning.get(w).cloned().unwrap_or_else(|| normalised(at.word(w)))
+    }
+
+    /// fertilisation's self-test, in the space of meanings: memory answers alone. For each role, memory's knowledge
+    /// of the reading's other words (what its verb was done by and done to; what its agent did and its patient
+    /// underwent; for words it has not met, the three of most alike meaning that it has) is bound into one state.
+    /// Each role is unbound from that state and measured against the meanings of the sentence's words: memory's
+    /// support for the reading's word, minus its support for the best other word. Negative means memory would put
+    /// another word there: a conflict with what the core knows. A role memory knows nothing of is left out.
+    /// Returns whether memory spoke on any role, and the smallest of these margins (f32::MAX when it said nothing).
+    /// With `leave_out`, the reading's own pairs are not used (for learning the threshold).
+    pub fn read_back(&self, at: &Atoms, _s: &HVec, f: &[String; 3], words: &[String], leave_out: Option<usize>) -> (bool, f32) {
+        // the words memory may choose between for each role: those of the sentence that fit the role (the membrane's
+        // knowledge), and the reading's own word
+        let fit: Vec<[f32; 4]> = (0..words.len()).map(|i| self.fitness(at, words, i)).collect();
+        let cands_for = |r: usize| -> Vec<(String, HVec)> {
+            let mut c: Vec<(String, HVec)> = Vec::new();
+            for (i, w) in words.iter().enumerate() {
+                if (fit[i][r] >= self.membrane || *w == f[r]) && !c.iter().any(|(x, _)| x == w) {
+                    c.push((w.clone(), self.meaning_of(at, w)));
+                }
+            }
+            c
+        };
+        let recall = |lists: &[(&HashMap<String, Vec<String>>, &String, &String)]| -> Option<HVec> {
+            let mut b = HVec::zero(at.d);
+            let mut any = false;
+            for (map, key, own) in lists {
+                let keys: Vec<(String, f32)> = if map.contains_key(*key) { vec![((*key).clone(), 1.0)] } else { self.alike_keys(at, map, key, 3) };
+                for (key, weight) in keys {
+                    if let Some(xs) = map.get(&key) {
+                        let mut skipped = false;
+                        for x in xs {
+                            if leave_out.is_some() && !skipped && x == *own {
+                                skipped = true;
+                                continue;
+                            }
+                            b.add_scaled(&self.meaning_of(at, x), weight);
+                            any = true;
+                        }
+                    }
+                }
+            }
+            (any && b.norm() > 1e-6).then(|| b)
+        };
+        let mut state = HVec::zero(at.d);
+        let mut spoke = [false; 3];
+        let part = (1.0f32 / 3.0).sqrt();
+        for (r, lists) in [
+            (0usize, vec![(&self.agents_of, &f[1], &f[0])]),
+            (2, vec![(&self.patients_of, &f[1], &f[2])]),
+            (1, vec![(&self.did, &f[0], &f[1]), (&self.underwent, &f[2], &f[1])]),
+        ] {
+            if let Some(b) = recall(&lists) {
+                let n = b.norm();
+                state.add_scaled(&at.role(r).bind(&b), part / n);
+                spoke[r] = true;
+            }
         }
-        (all, least)
+        let mut least = f32::MAX;
+        let debug = std::env::var("DARMA_DEBUG").is_ok();
+        for r in 0..3 {
+            let cands = cands_for(r);
+            if !spoke[r] || cands.len() < 2 {
+                continue;
+            }
+            if debug {
+                let q = state.unbind(&at.role(r));
+                let mut s: Vec<(f32, &String)> = cands.iter().map(|(w, v)| (q.sim(v), w)).collect();
+                s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                eprintln!("  role {r} wants {:?}; memory ranks {}", f[r], s.iter().map(|(x, w)| format!("{w} {x:.3}")).collect::<Vec<_>>().join(", "));
+            }
+            let q = state.unbind(&at.role(r));
+            let own = cands.iter().find(|(w, _)| *w == f[r]).map(|(_, v)| q.sim(v)).unwrap_or(0.0);
+            let other = cands.iter().filter(|(w, _)| *w != f[r]).map(|(_, v)| q.sim(v)).fold(f32::MIN, f32::max);
+            least = least.min(own - other);
+        }
+        (spoke.iter().any(|x| *x), least)
     }
 }

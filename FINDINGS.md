@@ -93,3 +93,25 @@ Vertailukohta sai samalla saman tiedon kuin Darma, eli roolilaskurit kaikista UD
 - **Ehdotus 3 ei toiminut, ja se peruttiin.** Viisi vahvinta luentaa yhdistettiin uintivoimilla painotettuna, ja roolit purettiin koko sanastoa vastaan. Kynnyksen piti oppia satunnaisista luentajoukoista. Satunnaisetkin joukot purkautuivat kuitenkin selvästi, koska painotus antaa aina yhdelle luennalle lähes kaiken painon. Kynnys nousi 0,49:ään, ja melkein kaikki hylättiin. Marginaali mittaa siis painojen epätasaisuutta eikä ymmärrystä. Lisäksi koko sanaston puhdistus vei kaksi sekuntia lauseelta.
 
 Hedelmöitys on siis edelleen kerros, joka ei tee työtään: sen itsetesti onnistuu aina. Seuraavaksi kannattaa kokeilla testiä, joka mittaa luennan ja muistin välistä ristiriitaa eikä vektorien siisteyttä. Esimerkki: kun luenta yhdistetään muistin palauttamaan tietoon, siirtyykö jonkin roolin purku toiseen sanaan?
+
+## Hedelmöityksen korjaus: ristiriitatesti
+
+Hedelmöitys on nyt testi siitä, onko luenta ristiriidassa ytimen tiedon kanssa. Sen itsetesti ei enää ole pelkkä vektorien siisteyden mittaus.
+
+- **Muisti vastaa yksin.** Jokaisesta roolista muistilta kysytään, kuka lauseen sanoista kuuluu siihen. Vastaus perustuu siihen, mitä luennan muut sanat ovat tehneet ja kokeneet harjoitusdatassa. Esimerkiksi tekijän kohdalla kysytään, keitä tämän verbin tekijät ovat olleet.
+- **Kilpailijat ovat vain rooliin sopivia sanoja,** eli niitä, jotka läpäisevät kalvon. Muuten täytesanat kuten "to" ja "of" voittivat aina, koska monen merkityksen summa osoittaa yleiseen suuntaan.
+- **Muisti yleistää merkitysten avulla.** Jokainen sana sai merkitysvektorin naapureistaan yhdellä läpikäynnillä. Lähteinä olivat UD, CoarseWSD ja 10 miljoonaa sanaa WikiText-103:a, joka on merkitsemätöntä tekstiä. Jos verbiä ei ole nähty, muisti kysyy kolmelta merkitykseltään lähimmältä. Merkitykset ovat osin järkeviä: "killed" on lähellä sanoja "injured", "captured" ja "arrested".
+- **Kynnys opitaan oikeista harjoitusklausuuleista.** Se on raja, jonka 95 % niistä ylittää, kun klausuulin oma tieto on poistettu muistista.
+
+**Tulos: rakenne toimii, mutta muisti on liian heikko, eivätkä mittarit muuttuneet.**
+
+| Havainto | Arvo |
+|---|---|
+| Muisti tuntee testiklausuulin tekijä–teko-parin | 5 / 77 |
+| Muisti tuntee testiklausuulin teko–kohde-parin | 6 / 77 |
+| Muisti tukee oikeaa järjestystä käännetyn yli | 45 / 77, kun sattuma antaisi noin 38 |
+| Opittu kynnys | −0,46 |
+
+Kynnys on negatiivinen, koska muisti suosii oikeissakin harjoitusklausuuleissa usein jotain muuta sanaa kuin oikeaa. Siksi testi päästää lähes kaiken läpi, ja järjettömistä hylätään yhä 13,3 %.
+
+Hedelmöitys on nyt oikea mittari. Se kertoo, ettei muistin tieto vielä riitä erottamaan järkevää järjettömästä. Seuraava askel on siksi muistin vahvistaminen eikä hedelmöityksen muuttaminen. Tarvitaan enemmän tekstiä merkityksiin, esimerkiksi koko WikiText-103:n 100 miljoonaa sanaa, ja enemmän merkittyjä tekijä–teko–kohde-pareja.

@@ -33,6 +33,8 @@ enum Cmd {
     Eval,
     /// the whole path for one sentence
     Ask { sentence: String },
+    /// the words whose meanings are nearest to these words' meanings
+    Near { words: Vec<String> },
 }
 
 fn main() {
@@ -47,5 +49,16 @@ fn main() {
         }
         Cmd::Eval => eval::run(cli.dim, cli.seed),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
+        Cmd::Near { words } => {
+            let d = eval::data();
+            let at = lexicon::Atoms::new(cli.dim, cli.seed);
+            let (m, _) = eval::train(&at, &d);
+            for w in words {
+                let v = m.meaning_of(&at, &w);
+                let mut s: Vec<(f32, &String)> = m.meaning.iter().filter(|(k, _)| **k != w).map(|(k, x)| (v.sim(x), k)).collect();
+                s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                println!("{w}: {}", s.iter().take(8).map(|(x, k)| format!("{k} {x:.2}")).collect::<Vec<_>>().join(", "));
+            }
+        }
     }
 }

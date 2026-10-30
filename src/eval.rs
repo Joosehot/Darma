@@ -127,6 +127,37 @@ pub fn run(dim: usize, seed: u64) {
     }
 
     println!("nonsense accepted as the original clause read backwards: {reread} of {}", nonsense.len());
+    // how much memory knows of the test clauses' pairs, and how often fertilisation's merge moved a role
+    let (mut pair_av, mut pair_vp, mut moved_real, mut moved_ns) = (0, 0, 0, 0);
+    for c in &d.test {
+        let g = c.gold();
+        let has = |map: &HashMap<String, Vec<String>>, k: &str, w: &str| map.get(k).is_some_and(|b| b.iter().any(|x| x == w));
+        pair_av += has(&m.agents_of, &g[1], &g[0]) as usize;
+        pair_vp += has(&m.patients_of, &g[1], &g[2]) as usize;
+        let ws = tokens(&c.text);
+        moved_real += (m.read_back(&at, &normalised(structure(&at, &g)), &g, &ws, None).1 < m.fertile) as usize;
+        let r = [g[2].clone(), g[1].clone(), g[0].clone()];
+        moved_ns += (m.read_back(&at, &normalised(structure(&at, &r)), &r, &ws, None).1 < m.fertile) as usize;
+    }
+    {
+        let (mut agree_real, mut agree_rev, mut spoke_n, mut better) = (0, 0, 0, 0);
+        for c in &d.test {
+            let g = c.gold();
+            let r = [g[2].clone(), g[1].clone(), g[0].clone()];
+            let ws = tokens(&c.sentence);
+            let (s1, a) = m.read_back(&at, &normalised(structure(&at, &g)), &g, &ws, None);
+            let (_, b) = m.read_back(&at, &normalised(structure(&at, &r)), &r, &tokens(&c.text), None);
+            let (_, a3) = m.read_back(&at, &normalised(structure(&at, &g)), &g, &tokens(&c.text), None);
+            if s1 {
+                spoke_n += 1;
+                agree_real += (a > 0.0) as usize;
+            }
+            agree_rev += (b > 0.0 && b < f32::MAX) as usize;
+            better += (a3 > b) as usize;
+        }
+        println!("memory spoke on {spoke_n} test clauses (in their sentences) and agreed with {agree_real}; on the three words alone it agreed with {agree_rev} reversed ones, and backed the real order over the reversed in {better} of {}", d.test.len());
+    }
+    println!("memory knows the agent-action pair of {pair_av} and the action-patient pair of {pair_vp} of {} test clauses; memory contradicts {moved_real} real clauses and {moved_ns} reversed ones", d.test.len());
     // order: the same three words, the roles swapped
     let mut order_sims = Vec::new();
     for c in &d.test {
