@@ -234,3 +234,7 @@ Ydin melkein ei koskaan vastaa väärin. Kun se ei ole varma, se sanoo "en ymmä
 Isompi dimensio ei yksin auta. Kun rekisterit tarkentuvat, myös aidot osittaiset osumat erottuvat, ja opittu raja nousee.
 
 **Yksikkötestit:** 11 testiä menee läpi, vektoreille ja ytimelle.
+
+**Kokeiltu ja hylätty:**
+- **Parirekisterit.** Lause lomitettiin myös vierekkäisten sanaparien kanssa. Mittakaavakokeen tulos heikkeni 58 %:sta 12 %:iin, koska opittu raja nousi 0,85:een. Muutos peruttiin.
+- **Merkitykset mittauksena, `qa-senses`.** CoarseWSD:n harjoituslauseet kerrottiin niin, että monimerkityksinen sana oli korvattu merkityksellään, ja testissä merkitys mitattiin aukkona. Oikein meni 49,1 %, kun vanha interferenssi saa 86,6 % ja yleisin merkitys 73,4 %. Uusi ydin muistaa tarkkoja sanajonoja, mutta merkityksen valinta vaatii yleistämistä lähiympäristöstä. Lisäksi 33 % jäi mittaamatta, koska ikkunassa oli uusi sana. Merkityksen valinta jää siksi lauseen sanojen superpositioksi, jota verrataan merkitysten konteksteihin. Sekin on interferenssimittaus, mutta eri kannassa.

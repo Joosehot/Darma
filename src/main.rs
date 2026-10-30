@@ -41,6 +41,8 @@ enum Cmd {
     Qa,
     /// the scale test: told every UD training sentence whole, asked about the marked clauses in their own words
     QaSentences,
+    /// senses as measurements: which sense does memory hold in this place?
+    QaSenses,
     /// talk: tell Darma things and ask it with who/what
     Chat {
         /// how much a word's learned meaning turns its operator (0: none)
@@ -71,6 +73,7 @@ fn main() {
         Cmd::Diagnose => eval::diagnose(cli.dim, cli.seed),
         Cmd::Qa => qa::run(cli.dim, cli.seed),
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
+        Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::Chat { beta, memory, fresh } => qa::chat(cli.dim, cli.seed, beta, &memory, fresh),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
         Cmd::Near { words } => {

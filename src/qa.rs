@@ -287,3 +287,47 @@ pub fn sentences(dim: usize, seed: u64) {
     println!("told questions (n={n}): right {:.1}%, wrong {:.1}%, en ymmärrä {:.1}%; untold (test sentences, n={nu}) answered {:.1}%; thresholds {:.3} / {:.2} sd; {us:.0} us a question",
         pct(right, n), pct(wrong, n), pct(dunno, n), pct(said, nu), core.threshold, core.fid_threshold);
 }
+
+/// senses as measurements (`darma qa-senses`): the CoarseWSD-20 training sentences are told with the two-or-more-sense
+/// word replaced by its marked sense ("cable that is swung by a crane_(machine) into the side"); a test sentence is
+/// asked with the word as the hole, and the candidates are the word's senses: which sense does memory hold here?
+pub fn senses(dim: usize, seed: u64) {
+    let d = data();
+    let at = Atoms::new(dim, seed);
+    let mut core = Core::new(&at, None, 0.0);
+    let t0 = Instant::now();
+    let around = |s: &crate::memory::SenseCase, fill: &str| -> Vec<String> {
+        let w: Vec<String> = s.sentence.split(' ').map(|x| x.to_lowercase()).collect();
+        let lo = s.index.saturating_sub(4);
+        let hi = (s.index + 5).min(w.len());
+        let mut out: Vec<String> = w[lo..hi].to_vec();
+        out[s.index - lo] = fill.to_string();
+        out
+    };
+    for s in &d.senses_train {
+        core.tell(&around(s, &s.sense));
+    }
+    println!("told {} sense-marked sentences (4 words each side of the word) in {:.1} s, D {dim}", d.senses_train.len(), t0.elapsed().as_secs_f64());
+    let mut senses_of: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+    for (w, s) in d.lex.senses.iter() {
+        senses_of.insert(w.as_str(), s.clone());
+    }
+    let (mut right, mut n, mut none) = (0, 0, 0);
+    let mut per: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    for s in &d.senses_test {
+        let q = around(s, "what");
+        let cands = senses_of.get(s.word.as_str()).cloned().unwrap_or_default();
+        // the measurement: the sense with the highest fidelity here (no "en ymmärrä" threshold: one sense is chosen)
+        let ms = core.measure(&q, &cands);
+        let got = ms.first().filter(|x| x.1 > 0.0).map(|x| x.0.clone());
+        n += 1;
+        none += got.is_none() as usize;
+        let ok = got.as_deref() == Some(s.sense.as_str());
+        right += ok as usize;
+        let e = per.entry(s.word.clone()).or_default();
+        e.0 += ok as usize;
+        e.1 += 1;
+    }
+    println!("sense chosen right {:.1}% (n={n}; no sense held at all {:.1}%)", pct(right, n), pct(none, n));
+    println!("{}", per.iter().map(|(w, (a, b))| format!("{w} {:.0}%", pct(*a, *b))).collect::<Vec<_>>().join("  "));
+}
