@@ -347,7 +347,7 @@ impl<'a> Talk<'a> {
 
     /// what the speaker says of themselves: kept in the world's memory as "you ..." ("my name is joose" -> "your
     /// name is joose"), and their questions of themselves ("what is my name") answered from it
-    fn of_you(&mut self, line: &str, w: &[String]) -> Reply {
+    fn of_you(&mut self, asked: bool, w: &[String]) -> Reply {
         let r = |said: String, why: String, kind| Reply { said, why, kind, recall: String::new(), ask: String::new() };
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
         let q = crate::me::to_you(&crate::me::statement_order(w));
@@ -357,12 +357,15 @@ impl<'a> Talk<'a> {
                 // what the speaker is, only they can say: not as some person in a conversation answered
                 (None, _) => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
             }
-        } else if line.trim_end().ends_with('?') {
+        } else if asked {
             match self.core.verify(&q) {
                 Some((_, z)) if z >= 3.0 => r("kyllä".into(), format!("you told me: {}", q.join(" ")), "yes"),
                 Some(_) => r("ei sen mukaan mitä tiedän sinusta".into(), format!("you have not told me: {}", q.join(" ")), "no"),
                 None => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
             }
+        } else if !matches!(w.first().map(|s| s.as_str()), Some("i" | "my")) {
+            // the speaker spoke of themselves but did not say what they are ("tell me a joke"): talk
+            self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it".into(), "unknown"))
         } else {
             let s = crate::me::to_you(w);
             let i = self.said.len();
@@ -377,16 +380,21 @@ impl<'a> Talk<'a> {
 
     /// what was said of Darma itself: kept in its self (told), or asked of its self (questions); a question of
     /// itself is answered only from what it knows of itself, never as some person in a conversation answered it
-    fn of_me(&mut self, line: &str, w: &[String]) -> Reply {
+    fn of_me(&mut self, asked: bool, w: &[String]) -> Reply {
         let r = |said: String, why: String, kind| Reply { said, why, kind, recall: String::new(), ask: String::new() };
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
         let q = crate::me::to_me(&crate::me::statement_order(w));
         if hole {
+            // what or who it is (a question with a copula: "who are you", "where are you from") is answered from
+            // itself only; what it does or thinks ("what do you think") may be answered as people did, never against
+            // what it knows of itself
+            let of_what_i_am = q.iter().any(|x| self.copulas.contains(x));
             match self.me.answer(&q, &self.copulas) {
                 Some(s) => r(s, "from what I know of myself".into(), "answer"),
+                None if !of_what_i_am => self.talk(w).unwrap_or_else(|| r("en tiedä sitä itsestäni".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown")),
                 None => r("en tiedä sitä itsestäni".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown"),
             }
-        } else if line.trim_end().ends_with('?') {
+        } else if asked {
             // "are you ...": a question of what it is, answered from itself only; any other ("how are you?") is talk,
             // answered as people did, but never against what it knows of itself
             let of_what_i_am = w.first().is_some_and(|x| self.copulas.contains(x));
@@ -396,11 +404,26 @@ impl<'a> Talk<'a> {
                 None if of_what_i_am => r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown"),
                 _ => self.talk(w).unwrap_or_else(|| r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown")),
             }
-        } else {
+        } else if matches!(w.first().map(|s| s.as_str()), Some("you" | "your")) {
+            // said of Darma itself ("you are curious"): kept in its self; and it answers as people did, if that fits
             let s = crate::me::to_me(w);
             self.me.tell(&s);
-            r("muistan sen itsestäni".into(), s.join(" "), "told")
+            match self.talk(w) {
+                Some(mut t) => {
+                    t.why = format!("{}; I keep of myself: {}", t.why, s.join(" "));
+                    t
+                }
+                None => r("muistan sen itsestäni".into(), s.join(" "), "told"),
+            }
+        } else {
+            // spoken to Darma, but not saying what it is ("how you doing", "thank you"): talk
+            self.talk(w).unwrap_or_else(|| r("en ymmärrä".into(), "nothing people said to this is like it, and it does not say what I am".into(), "unknown"))
         }
+    }
+
+    /// is this a question: it ends in "?", or opens with a word people's questions open with (learned)
+    fn asks(&self, line: &str, w: &[String]) -> bool {
+        line.trim_end().ends_with('?') || w.first().is_some_and(|f| self.dialog.as_ref().is_some_and(|d| d.opens_question(f)))
     }
 
     fn line_inner(&mut self, line: &str) -> Reply {
@@ -425,10 +448,12 @@ impl<'a> Talk<'a> {
         if w.is_empty() {
             r("", String::new(), "none")
         } else if crate::me::about_me(&w) {
-            self.of_me(line, &w)
+            let asked = self.asks(line, &w);
+            self.of_me(asked, &w)
         } else if crate::me::about_speaker(&w) {
-            self.of_you(line, &w)
-        } else if line.trim_end().ends_with('?') && !hole {
+            let asked = self.asks(line, &w);
+            self.of_you(asked, &w)
+        } else if self.asks(line, &w) && !hole {
             // what it was told answers first; if that cannot say, it answers as people did
             match self.core.verify_reasoned(&w, &self.copulas, 3.0) {
                 Some((true, why)) if why.is_empty() => r("kyllä", String::new(), "yes"),

@@ -22,6 +22,9 @@ pub struct Dialog {
     turns: Vec<(Vec<String>, String, Option<usize>)>,
     /// the turn before each kept turn in its dialogue
     prev: Vec<Option<usize>>,
+    /// the first words of people's turns, with how many of those turns were questions (ended in "?") and how many
+    /// there were: what opens a question, learned
+    openers: HashMap<String, (u32, u32)>,
     index: HashMap<String, Vec<u32>>,
     df: HashMap<String, u32>,
     norm: Vec<f32>,
@@ -62,6 +65,16 @@ impl Dialog {
                 prev.push((k > 0).then(|| start + k - 1));
             }
         }
+        let mut openers: HashMap<String, (u32, u32)> = HashMap::new();
+        for (w, text, _) in &turns {
+            if let Some(f) = w.first() {
+                let e = openers.entry(f.clone()).or_default();
+                e.1 += 1;
+                if text.trim_end().ends_with('?') {
+                    e.0 += 1;
+                }
+            }
+        }
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         let mut df: HashMap<String, u32> = HashMap::new();
         for (i, (w, _, _)) in turns.iter().enumerate() {
@@ -73,7 +86,7 @@ impl Dialog {
         let n = turns.len() as f32;
         let idf = |r: &str| (n / *df.get(r).unwrap_or(&1) as f32).ln();
         let norm = turns.iter().map(|(w, _, _)| runs(w).iter().map(|r| idf(r).powi(2)).sum::<f32>().sqrt().max(1e-6)).collect();
-        Some(Dialog { turns, prev, index, df, norm, recent: Vec::new() })
+        Some(Dialog { turns, prev, openers, index, df, norm, recent: Vec::new() })
     }
 
     fn idf(&self, r: &str) -> f32 {
@@ -185,6 +198,11 @@ impl Dialog {
             }
         }
         None
+    }
+
+    /// does a turn opening with this word ask, as people's turns do (at least 20 of them, most ending in "?")?
+    pub fn opens_question(&self, first: &str) -> bool {
+        self.openers.get(first).is_some_and(|(q, n)| *n >= 20 && *q * 2 > *n)
     }
 
     pub fn len(&self) -> usize {
