@@ -48,8 +48,8 @@ pub struct Composer {
     pub act_after: Vec<Vec<u32>>,
     df: HashMap<String, u32>,
     turns: f32,
-    /// the words people marked in UD as a verb's subject or object, with the share of their uses that were so: the
-    /// things lines are about
+    /// the words people marked in UD as heads of noun phrases, with the share of their marks that were so: the things
+    /// lines are about
     things: HashMap<String, f32>,
     /// every training turn's text (to measure how much of what Darma says is a copy)
     pub seen: std::collections::HashSet<String>,
@@ -86,22 +86,16 @@ impl Composer {
                 }
             }
         }
-        // the things: words people marked in UD as a subject or an object, at least twice
-        let mut things_n: HashMap<String, (u32, u32)> = HashMap::new();
-        if let Ok(s) = std::fs::read_to_string("data/roles_train.json") {
-            if let Ok(tagged) = serde_json::from_str::<Vec<crate::memory::Tagged>>(&s) {
-                for tg in tagged {
-                    for (w, r) in tg.words.iter().zip(&tg.roles) {
-                        let e = things_n.entry(w.clone()).or_default();
-                        e.1 += 1;
-                        if r == "A" || r == "P" {
-                            e.0 += 1;
-                        }
-                    }
-                }
-            }
-        }
-        let things = things_n.into_iter().filter(|x| x.1 .0 >= 2).map(|(w, (a, n))| (w, a as f32 / n as f32)).collect();
+        // the things: words people marked in UD as the head of a noun phrase, with the share of their marks that were so
+        // (price: a head; rock in "rock-bottom price": a modifier)
+        let things: HashMap<String, f32> = std::fs::read_to_string("data/heads.json")
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, (u32, u32)>>(&s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, (h, _))| *h >= 2)
+            .map(|(w, (h, m))| (w, h as f32 / (h + m) as f32))
+            .collect();
         let mut c = Composer { forms: HashMap::new(), to_feeling: vec![Vec::new(); 7], to_act: vec![Vec::new(); 4], act_after: vec![vec![0; 4]; 4], df, turns, things, seen };
         let mut feel: Vec<HashMap<String, u32>> = vec![HashMap::new(); 7];
         let mut plain: Vec<HashMap<String, u32>> = vec![HashMap::new(); 4];
@@ -153,9 +147,14 @@ impl Composer {
     /// a line's topic: its rarest thing (a word people marked as a subject or object), met at least twice, if that
     /// word is in fewer than one turn in a hundred
     pub fn topic(&self, line: &[String]) -> Option<String> {
-        // the most thing-like of the rare things: rarity times the share of its uses as a subject or object
+        // the most head-like of the rare things (mostly a head, not a word that modifies one): rarity times its share
+        // of marks as a head
+        // a thing right before another thing modifies it ("rock" in "rock bottom price"): the head comes last
+        let head_like = |x: &String| self.things.get(x).is_some_and(|h| *h >= 0.5);
         line.iter()
-            .filter(|x| self.things.contains_key(*x) && self.df.get(*x).is_some_and(|c| *c >= 2) && self.rarity(x) >= 100f32.ln())
+            .enumerate()
+            .filter(|(i, x)| head_like(x) && !line.get(i + 1).is_some_and(|n| head_like(n)) && self.df.get(*x).is_some_and(|c| *c >= 2) && self.rarity(x) >= 100f32.ln())
+            .map(|(_, x)| x)
             .max_by(|a, b| (self.rarity(a) * self.things[*a]).partial_cmp(&(self.rarity(b) * self.things[*b])).unwrap())
             .cloned()
     }
@@ -170,7 +169,7 @@ impl Composer {
 
     /// what Darma answers, how it decided (act and emotion read, topic, how it chose), every candidate it let go
     /// and why; `test` lets go of what goes against Darma's character
-    pub fn answer(&self, u: &Understanding, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
+    pub fn answer(&self, u: &Understanding, d: &crate::dialog::Dialog, line: &[String], test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String)> {
         let r = u.read(line);
         let a = ACTS.iter().position(|x| *x == r.act).unwrap();
         let e = EMOTIONS.iter().position(|x| *x == r.emotion).unwrap();
@@ -188,7 +187,9 @@ impl Composer {
             let rest: Vec<String> = line.iter().filter(|x| **x != t).cloned().collect();
             let pool: Vec<&Form> = self.forms.get(&(a, e)).map(|v| v.iter().collect()).unwrap_or_default();
             // the form whose line is most like this one; a form taken with many topics is more surely a form
-            let mut best: Vec<(f32, &Form)> = pool.iter().map(|f| (self.likeness(&rest, &f.source) * (1.0 + (f.topics as f32).ln()), *f)).collect();
+            // the form whose line resonates most in meaning with this one (the topic left out of both)
+            let here = d.meaning_state(&rest);
+            let mut best: Vec<(f32, &Form)> = pool.iter().map(|f| (here.sim(&d.meaning_state(&f.source)).max(0.0), *f)).collect();
             best.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
             for (s, f) in best.iter().take(20) {
                 let said = tidy_words(&f.words.iter().map(|x| if x == SLOT { t.clone() } else { x.clone() }).collect::<Vec<_>>());
@@ -209,12 +210,15 @@ pub fn eval(dim: usize, seed: u64) {
     let at = crate::lexicon::Atoms::new(dim, seed);
     let Some((u, _)) = crate::understand::strike_or_load(&at) else { return println!("download DailyDialog first") };
     let c = Composer::learn("data/raw/dailydialog/train_marked.json").unwrap();
+    let dl = crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json").unwrap();
     println!("how people answer each act (share of the answer's act):");
     for (i, row) in c.act_after.iter().enumerate() {
         let n: u32 = row.iter().sum();
         println!("  {:<11} -> {}", ACTS[i], ACTS.iter().zip(row).map(|(a, k)| format!("{a} {:.0}%", 100.0 * *k as f32 / n as f32)).collect::<Vec<_>>().join(", "));
     }
-    let test: Vec<Marked> = serde_json::from_str(&std::fs::read_to_string("data/raw/dailydialog/test_marked.json").unwrap()).unwrap();
+    let mut test: Vec<Marked> = serde_json::from_str(&std::fs::read_to_string("data/raw/dailydialog/test_marked.json").unwrap()).unwrap();
+    // a short run: the first 150 test dialogues
+    test.truncate(150);
     let f1 = |a: &[String], b: &[String]| -> f32 {
         let common = a.iter().filter(|x| b.contains(x)).count() as f32;
         if common == 0.0 { 0.0 } else { let p = common / a.len() as f32; let r = common / b.len() as f32; 2.0 * p * r / (p + r) }
@@ -227,14 +231,14 @@ pub fn eval(dim: usize, seed: u64) {
             if line.is_empty() || real.is_empty() {
                 continue;
             }
-            let Some((ans, why)) = c.answer(&u, &line, &|_| None) else { continue };
+            let Some((ans, why)) = c.answer(&u, &dl, &line, &|_| None) else { continue };
             let aw = tokens(&ans);
             n += 1;
             f += f1(&aw, &real);
             copies += c.seen.contains(&aw.join(" ")) as usize;
             with_topic += why.contains("topic \"") as usize;
             feeling += (why.contains("people most often say this") && !why.contains("no topic")) as usize;
-            if shown < 10 && n % 700 == 1 {
+            if shown < 8 && n % 120 == 1 {
                 shown += 1;
                 println!("\n  said:   {}\n  Darma:  {ans}\n  person: {}\n  ({why})", crate::dialog::tidy(&d.dialog[k]), crate::dialog::tidy(&d.dialog[k + 1]));
             }

@@ -205,6 +205,25 @@ pub fn prepare(dir: &Path) -> std::io::Result<()> {
         }
     }
     put("copulas.json", serde_json::to_string_pretty(&cop).unwrap())?;
+    // heads of noun phrases: how often people marked each noun as a phrase's head (a subject, object, or other
+    // nominal of a verb or noun) and how often as only modifying another noun (a compound or an adjective's place):
+    // in "rock-bottom price" the head is price
+    let mut heads: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for name in ["ud/en_ewt-ud-train.conllu", "ud/en_ewt-ud-dev.conllu"] {
+        for line in fs::read_to_string(raw.join(name)).unwrap().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 8 || f[0].contains('-') || !f[1].chars().all(|c| c.is_alphabetic()) {
+                continue;
+            }
+            let w = f[1].to_lowercase();
+            if f[3] == "NOUN" && matches!(f[7], "nsubj" | "obj" | "iobj" | "obl" | "nmod" | "nsubj:pass" | "root" | "conj" | "appos") {
+                heads.entry(w).or_default().0 += 1;
+            } else if matches!(f[7], "compound" | "amod") {
+                heads.entry(w).or_default().1 += 1;
+            }
+        }
+    }
+    put("heads.json", serde_json::to_string(&heads).unwrap())?;
     println!("copulas marked in UD: {:?}", cop.iter().filter(|x| *x.1 >= 20).collect::<Vec<_>>());
     println!("role-marked training sentences (UD EWT train + dev): {}, {} words", tg.len(), tg.iter().map(|t| t.words.len()).sum::<usize>());
     put("train.json", serde_json::to_string_pretty(&train).unwrap())?;

@@ -293,3 +293,17 @@ Esimerkkejä:
 3. **Mittari ei sovi tähän.** Päällekkäisyys oikean vastauksen kanssa palkitsee kopiointia. Se ei mittaa, onko vastaus sopiva. Oikea mittari vaatisi ihmisen arvion, esimerkiksi omistajan.
 
 Kun lyhyiden yleismuottien suosimista vähennettiin, kopiointi nousi. Syy on se, että vastaukset kuten "Thank you", "Ok" ja "Yes" ovat itse yleisiä repliikkejä.
+
+## Oma lause, versio 2: pääsanat ja merkitys
+
+- **Aihe.** Aihe valitaan nyt UD:n pääsanamerkinnöistä (heads.json). Sana kelpaa aiheeksi, jos se on yleensä substantiivilausekkeen pääsana eikä määrite, eikä sitä seuraa heti toinen asiasana. Esimerkiksi "chinese" on aina määrite, ja "price" on yleensä pääsana.
+- **Muotti.** Muotti valitaan sen mukaan, kenen alkuperäisen repliikin tila resonoi merkitykseltään vahvimmin käyttäjän repliikin kanssa. Merkitysaallot tulevat keskustelumuistista.
+- **Testi** kestää nyt noin 4 sekuntia, 150 keskustelua.
+
+| DailyDialog test, 150 keskustelua | F1 oikeaan vastaukseen | Sanasta sanaan harjoitusrepliikki |
+|---|---|---|
+| Versio 2 | 0,073 | 43,8 % |
+| Versio 1, koko testiosa | 0,054–0,089 | 23,5–49,5 % |
+| Hakuversio | 0,210 | 100 % |
+
+**Menetelmän raja:** muotti, jota ihmiset ovat käyttäneet monen eri aiheen kanssa, on lähes aina lyhyt, kuten "Which ___" tai "___ please". Pidemmät muotit esiintyvät vain kerran, ja ne ovat yksittäisiä lauseita eivätkä yleisiä muotteja. Yhden aukon muotit eivät siis yksin riitä oman lauseen tekemiseen. Seuraava askel olisi monen aukon rakenne, jossa on tekijä, teko ja kohde, ja jonka Darma oppisi UD:sta. Sisältö tulisi Darman omasta tiedosta, mutta tätä ei ole vielä rakennettu.
