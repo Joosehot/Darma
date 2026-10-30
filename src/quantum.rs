@@ -109,6 +109,7 @@ impl<'a> Core<'a> {
         let d = self.at.d;
         let mut fills: Vec<String> = words.to_vec();
         fills.extend(words.windows(2).map(|p| p.join(" ")));
+        fills.extend(words.windows(3).map(|p| p.join(" ")));
         for w in u {
             let e = self.reg.entry(w.clone()).or_insert_with(|| (HVec::zero(d), 0, 0));
             e.0.add_scaled(&s, sign);

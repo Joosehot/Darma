@@ -168,6 +168,8 @@ pub struct Talk<'a> {
     dialog: Option<crate::dialog::Dialog>,
     /// what Darma said last (the conversation so far, for the next match)
     last: Option<Vec<String>>,
+    /// what Darma knows of itself
+    pub me: crate::me::Me<'a>,
 }
 
 use crate::dialog::TALK_AT;
@@ -198,7 +200,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json"), last: None };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh) };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -210,6 +212,8 @@ impl<'a> Talk<'a> {
             talk.learn(&words_of(line));
         }
         talk.remembered = talk.said.len();
+        let n = talk.said.len();
+        talk.me.happened("remember", &format!("i remember {n} things"));
         talk
     }
 
@@ -309,15 +313,94 @@ impl<'a> Talk<'a> {
     /// what people answered to the turn most like this one, if one is alike enough
     fn talk(&mut self, w: &[String]) -> Option<Reply> {
         let last = self.last.clone();
-        let (ans, matched, s) = self.dialog.as_mut()?.reply(w, last.as_deref())?;
-        (s >= TALK_AT).then(|| Reply { said: ans, why: format!("people answered this to: \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
+        let me = &self.me;
+        let world = &self.core;
+        let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
+        let test = |ans: &str| me.names_a_stranger(ans, &known).or_else(|| me.contradicts(&words_of(ans)));
+        let (ans, matched, s, let_go) = self.dialog.as_mut()?.reply_where(w, last.as_deref(), &test)?;
+        let mut why = format!("people answered this to: \"{matched}\" ({s:.2})");
+        if !let_go.is_empty() {
+            why.push_str(&format!("; not as myself: {}", let_go.join("; ")));
+        }
+        (s >= TALK_AT).then(|| Reply { said: ans, why, kind: "talk", recall: String::new(), ask: String::new() })
     }
 
     pub fn line(&mut self, line: &str) -> Reply {
         let rep = self.line_inner(line);
         let said = if rep.ask.is_empty() { rep.said.clone() } else { rep.ask.clone() };
         self.last = Some(words_of(&said));
+        // it tells itself what happened to it
+        let n = self.said.len();
+        self.me.happened("remember", &format!("i remember {n} things"));
+        let heard = words_of(line).join(" ");
+        if rep.kind == "told" && !heard.is_empty() {
+            self.me.happened("told", &format!("i was told {heard}"));
+        }
+        if rep.kind == "unknown" && !heard.is_empty() {
+            self.me.happened("unknown", &format!("i could not answer {heard}"));
+        }
+        if !rep.ask.is_empty() {
+            self.me.happened("asked", &format!("i asked {}", words_of(&rep.ask).join(" ")));
+        }
         rep
+    }
+
+    /// what the speaker says of themselves: kept in the world's memory as "you ..." ("my name is joose" -> "your
+    /// name is joose"), and their questions of themselves ("what is my name") answered from it
+    fn of_you(&mut self, line: &str, w: &[String]) -> Reply {
+        let r = |said: String, why: String, kind| Reply { said, why, kind, recall: String::new(), ask: String::new() };
+        let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
+        let q = crate::me::to_you(&crate::me::statement_order(w));
+        if hole {
+            match self.core.answer_reasoned(&q, &self.copulas) {
+                (Some(a), _) => r(q.iter().map(|x| if crate::quantum::HOLES.contains(&x.as_str()) { a.clone() } else { x.clone() }).collect::<Vec<_>>().join(" "), "from what you told me of yourself".into(), "answer"),
+                // what the speaker is, only they can say: not as some person in a conversation answered
+                (None, _) => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
+            }
+        } else if line.trim_end().ends_with('?') {
+            match self.core.verify(&q) {
+                Some((_, z)) if z >= 3.0 => r("kyllä".into(), format!("you told me: {}", q.join(" ")), "yes"),
+                Some(_) => r("ei sen mukaan mitä tiedän sinusta".into(), format!("you have not told me: {}", q.join(" ")), "no"),
+                None => r("en tiedä sitä sinusta".into(), format!("you have not told me: {}", q.join(" ")), "unknown"),
+            }
+        } else {
+            let s = crate::me::to_you(w);
+            let i = self.said.len();
+            self.learn(&s);
+            use std::io::Write;
+            let _ = writeln!(self.log, "{}", s.join(" "));
+            let mut rep = r("muistan sen sinusta".into(), s.join(" "), "told");
+            rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
+            rep
+        }
+    }
+
+    /// what was said of Darma itself: kept in its self (told), or asked of its self (questions); a question of
+    /// itself is answered only from what it knows of itself, never as some person in a conversation answered it
+    fn of_me(&mut self, line: &str, w: &[String]) -> Reply {
+        let r = |said: String, why: String, kind| Reply { said, why, kind, recall: String::new(), ask: String::new() };
+        let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
+        let q = crate::me::to_me(&crate::me::statement_order(w));
+        if hole {
+            match self.me.answer(&q, &self.copulas) {
+                Some(s) => r(s, "from what I know of myself".into(), "answer"),
+                None => r("en tiedä sitä itsestäni".into(), format!("I know nothing of myself that answers \"{}\"", q.join(" ")), "unknown"),
+            }
+        } else if line.trim_end().ends_with('?') {
+            // "are you ...": a question of what it is, answered from itself only; any other ("how are you?") is talk,
+            // answered as people did, but never against what it knows of itself
+            let of_what_i_am = w.first().is_some_and(|x| self.copulas.contains(x));
+            match self.me.verify(&q, &self.copulas) {
+                Some(true) => r("kyllä".into(), format!("I know of myself: {}", q.join(" ")), "yes"),
+                Some(false) if of_what_i_am => r("ei sen mukaan mitä tiedän itsestäni".into(), format!("I do not know this of myself: {}", q.join(" ")), "no"),
+                None if of_what_i_am => r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown"),
+                _ => self.talk(w).unwrap_or_else(|| r("en tiedä sitä itsestäni".into(), format!("nobody has told me: {}", q.join(" ")), "unknown")),
+            }
+        } else {
+            let s = crate::me::to_me(w);
+            self.me.tell(&s);
+            r("muistan sen itsestäni".into(), s.join(" "), "told")
+        }
     }
 
     fn line_inner(&mut self, line: &str) -> Reply {
@@ -341,6 +424,10 @@ impl<'a> Talk<'a> {
         }
         if w.is_empty() {
             r("", String::new(), "none")
+        } else if crate::me::about_me(&w) {
+            self.of_me(line, &w)
+        } else if crate::me::about_speaker(&w) {
+            self.of_you(line, &w)
         } else if line.trim_end().ends_with('?') && !hole {
             // what it was told answers first; if that cannot say, it answers as people did
             match self.core.verify_reasoned(&w, &self.copulas, 3.0) {
@@ -439,6 +526,8 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
             let rep = talk.line(body.trim());
             let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "recall": rep.recall, "ask": rep.ask, "told": talk.core.told});
             ("application/json", j.to_string())
+        } else if head.starts_with("GET /self") {
+            ("application/json", serde_json::json!({"self": talk.me.all()}).to_string())
         } else if head.starts_with("GET /state") {
             ("application/json", serde_json::json!({"told": talk.core.told, "memory": memory}).to_string())
         } else {

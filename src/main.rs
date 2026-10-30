@@ -7,6 +7,7 @@ mod dialog;
 mod egg;
 mod eval;
 mod lexicon;
+mod me;
 mod memory;
 mod qa;
 mod quantum;

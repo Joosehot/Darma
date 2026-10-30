@@ -47,6 +47,11 @@
   .answers { display: flex; gap: 6px; margin-top: 8px; }
   .answers button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
   .answers button:hover { border-color: var(--accent); }
+  .selfbtn { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 4px 10px; cursor: pointer; margin-left: 8px; }
+  #self { display: none; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 14px; margin: 8px 0; font-size: 14px; }
+  #self.open { display: block; }
+  #self h2 { font-size: 14px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+  #self ul { margin: 0; padding-left: 18px; }
   form { display: flex; gap: 8px; padding: 12px 0 20px; border-top: 1px solid var(--line); }
   input { flex: 1; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; outline: none; }
   input:focus { border-color: var(--accent); }
@@ -58,15 +63,17 @@
 <div class="wrap">
   <header>
     <h1>Darma</h1>
-    <span class="state" id="state">…</span>
+    <span><span class="state" id="state">…</span><button class="selfbtn" id="selfbtn" type="button">Darma itsestään</button></span>
   </header>
   <div class="help">
     <b>Kerro</b> asioita englanniksi: <i>the dog chased the cat</i>.
     <b>Kysy</b> sanoilla <i>who</i> tai <i>what</i>: <i>who chased the cat</i>, <i>the dog chased what</i>.
     <b>Kyllä vai ei</b>: lopeta kysymysmerkkiin, <i>the dog chased the cat?</i>
     Darma kertoo, mitä se muistaa samasta asiasta, ja kysyy itse, kun sen tieto jättää aukon: vastaa <i>yes</i> tai <i>no</i>.
-    Muuhun se vastaa niin kuin ihmiset ovat vastanneet samankaltaiseen repliikkiin (DailyDialog).
+    Muuhun se vastaa niin kuin ihmiset ovat vastanneet samankaltaiseen repliikkiin (DailyDialog), mutta ei koskaan vastoin sitä, mitä se tietää itsestään.
+    <b>Darmasta itsestään</b>: <i>who are you?</i>, <i>you are curious</i>. <b>Sinusta</b>: <i>my name is …</i>, <i>what is my name?</i>
   </div>
+  <div id="self"><h2>Mitä Darma tietää itsestään</h2><ul id="selflist"></ul></div>
   <div class="chips" id="chips"></div>
   <div id="log" aria-live="polite"></div>
   <form id="f">
@@ -75,7 +82,7 @@
   </form>
 </div>
 <script>
-const examples = ["hi, how are you?", "what do you do for a living?", "the dog chased the cat", "rex is a dog", "rex chased what"];
+const examples = ["hi, how are you?", "who are you?", "what do you remember?", "my name is joose", "what is my name?", "rex is a dog", "the dog chased the cat"];
 const log = document.getElementById("log"), q = document.getElementById("q"), send = document.getElementById("send"), state = document.getElementById("state");
 const setState = n => { state.textContent = n === 1 ? "muistaa 1 asian" : `muistaa ${n} asiaa`; };
 for (const e of examples) {
@@ -110,6 +117,15 @@ function askBubble(question) {
   d.appendChild(a);
 }
 fetch("/state").then(r => r.json()).then(j => setState(j.told)).catch(() => state.textContent = "ei yhteyttä");
+const selfBox = document.getElementById("self");
+async function refreshSelf() {
+  try {
+    const j = await (await fetch("/self")).json();
+    const ul = document.getElementById("selflist"); ul.innerHTML = "";
+    for (const s of j.self) { const li = document.createElement("li"); li.textContent = s; ul.appendChild(li); }
+  } catch (e) {}
+}
+document.getElementById("selfbtn").onclick = () => { selfBox.classList.toggle("open"); refreshSelf(); };
 async function say(text) {
   document.querySelectorAll(".answers").forEach(x => x.remove());
   add("me", text); send.disabled = true;
@@ -119,6 +135,7 @@ async function say(text) {
     add("darma " + j.kind, j.said, j.kind === "told" ? "" : j.why, j.recall);
     if (j.ask) askBubble(j.ask);
     setState(j.told);
+    if (selfBox.classList.contains("open")) refreshSelf();
   } catch (e) {
     add("darma unknown", "yhteys katkesi", "onko darma serve käynnissä?");
   }

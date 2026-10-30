@@ -161,6 +161,32 @@ impl Dialog {
         Some((tidy(&self.turns[next].1), tidy(&self.turns[i].1), s))
     }
 
+    /// the best answer that passes `test` (None: passes; Some(reason): let go), trying up to ten turns in order of
+    /// likeness; returns (answer, the turn it matched, likeness, what was let go and why)
+    pub fn reply_where(&mut self, words: &[String], context: Option<&[String]>, test: &dyn Fn(&str) -> Option<String>) -> Option<(String, String, f32, Vec<String>)> {
+        let mut skip = self.recent.clone();
+        let mut let_go = Vec::new();
+        for _ in 0..10 {
+            let (i, s) = self.nearest(words, context, &skip)?;
+            let next = self.turns[i].2?;
+            let ans = tidy(&self.turns[next].1);
+            match test(&ans) {
+                None => {
+                    self.recent.push(i);
+                    if self.recent.len() > 8 {
+                        self.recent.remove(0);
+                    }
+                    return Some((ans, tidy(&self.turns[i].1), s, let_go));
+                }
+                Some(why) => {
+                    let_go.push(format!("\"{ans}\" ({why})"));
+                    skip.push(i);
+                }
+            }
+        }
+        None
+    }
+
     pub fn len(&self) -> usize {
         self.turns.len()
     }
