@@ -164,7 +164,12 @@ pub struct Talk<'a> {
     recent: Vec<usize>,
     pending: Option<Vec<String>>,
     asked: Vec<Vec<String>>,
+    /// people's conversations: what they answered to what (None when DailyDialog is not downloaded)
+    dialog: Option<crate::dialog::Dialog>,
 }
+
+/// how alike a kept turn must be to what was said for Darma to answer as people did (a cosine; set by hand)
+pub const TALK_AT: f32 = 0.3;
 
 /// one reply: what Darma says, on what it stood, what it recalls of it, and what it asks back
 pub struct Reply {
@@ -192,7 +197,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new() };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train.json") };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -300,6 +305,12 @@ impl<'a> Talk<'a> {
         None
     }
 
+    /// what people answered to the turn most like this one, if one is alike enough
+    fn talk(&mut self, w: &[String]) -> Option<Reply> {
+        let (ans, matched, s) = self.dialog.as_mut()?.reply(w)?;
+        (s >= TALK_AT).then(|| Reply { said: ans, why: format!("people answered this to: \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
+    }
+
     pub fn line(&mut self, line: &str) -> Reply {
         let w = words_of(line);
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
@@ -322,25 +333,34 @@ impl<'a> Talk<'a> {
         if w.is_empty() {
             r("", String::new(), "none")
         } else if line.trim_end().ends_with('?') && !hole {
+            // what it was told answers first; if that cannot say, it answers as people did
             match self.core.verify_reasoned(&w, &self.copulas, 3.0) {
-                None => r("en tiedä", "some of these words I was never told".into(), "unknown"),
                 Some((true, why)) if why.is_empty() => r("kyllä", String::new(), "yes"),
                 Some((true, why)) => r("kyllä", format!("because {}", why.join("; ")), "yes"),
-                Some((false, _)) => r("ei sen mukaan mitä tiedän", "I know these words, but not this of them".into(), "no"),
+                Some((false, _)) => self.talk(&w).unwrap_or_else(|| r("ei sen mukaan mitä tiedän", "I know these words, but not this of them".into(), "no")),
+                None => self.talk(&w).unwrap_or_else(|| r("en tiedä", "some of these words I was never told".into(), "unknown")),
             }
         } else if hole {
             match self.core.answer_reasoned(&w, &self.copulas) {
                 (Some(x), why) if why.is_empty() => r(&x, String::new(), "answer"),
                 (Some(x), why) => r(&x, format!("because {}", why.join("; ")), "answer"),
-                (None, _) => r("en ymmärrä", "nothing I was told stands out as the answer".into(), "unknown"),
+                (None, _) => self.talk(&w).unwrap_or_else(|| r("en ymmärrä", "nothing I was told stands out as the answer".into(), "unknown")),
             }
         } else {
             let i = self.said.len();
             self.learn(&w);
             use std::io::Write;
             let _ = writeln!(self.log, "{}", w.join(" "));
-            let mut rep = r("muistan", format!("{} things told", self.core.told), "told");
-            rep.recall = self.recall(&w, Some(i)).unwrap_or_default();
+            // it answers as people did when what was said is like something they answered; else it says it remembers,
+            // and what it recalls of it
+            let mut rep = match self.talk(&w) {
+                Some(t) => t,
+                None => {
+                    let mut rep = r("muistan", format!("{} things told", self.core.told), "told");
+                    rep.recall = self.recall(&w, Some(i)).unwrap_or_default();
+                    rep
+                }
+            };
             if let Some(q) = self.wonder(&w) {
                 rep.ask = format!("{}?", q.join(" "));
                 self.pending = Some(q);

@@ -3,6 +3,7 @@
 //! swim and the egg's three layers; eval.rs the measures and the baseline.
 
 mod data;
+mod dialog;
 mod egg;
 mod eval;
 mod lexicon;
@@ -51,6 +52,8 @@ enum Cmd {
         #[arg(long)]
         seed_ud: bool,
     },
+    /// conversation from people's conversations: DailyDialog's test dialogues against Darma's answers
+    DialogEval,
     /// senses as measurements: which sense does memory hold in this place?
     QaSenses,
     /// talk: tell Darma things and ask it with who/what
@@ -84,6 +87,7 @@ fn main() {
         Cmd::Qa => qa::run(cli.dim, cli.seed),
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
+        Cmd::DialogEval => dialog::eval("data/raw/dailydialog/train.json", "data/raw/dailydialog/test.json"),
         Cmd::Chat { beta: _, memory, fresh } => qa::chat(cli.dim, cli.seed, &memory, fresh),
         Cmd::Serve { port, memory, seed_ud } => qa::serve(cli.dim, cli.seed, &memory, port, seed_ud),
         Cmd::Ask { sentence } => eval::ask(cli.dim, cli.seed, &sentence),
