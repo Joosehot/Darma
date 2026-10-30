@@ -375,7 +375,12 @@ impl<'a> Talk<'a> {
         let d = self.dialog.as_mut()?;
         let short = w.iter().filter(|x| d.knows(x)).count() <= SOCIAL_WORDS;
         let (ans, matched, s, _) = d.reply_where(w, last.as_deref(), None, &test)?;
-        (short && s >= SOCIAL_AT).then(|| Reply { said: ans, why: format!("a social formula; people answered this to \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
+        // only the formula itself: the answer's first sentence, and short ("Great, thanks." not the stranger's
+        // "I was calling to change our meeting" after it)
+        let end = ans.trim().find(['.', '!', '?']).map_or(ans.trim().len(), |k| k + 1);
+        let ans = ans.trim()[..end].to_string();
+        let formula = words_of(&ans).len() <= SOCIAL_WORDS;
+        (short && formula && s >= SOCIAL_AT).then(|| Reply { said: ans, why: format!("a social formula; people answered this to \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
     }
 
     pub fn line(&mut self, line: &str) -> Reply {
