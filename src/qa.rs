@@ -172,20 +172,14 @@ pub struct Talk<'a> {
     pub me: crate::me::Me<'a>,
     /// its understanding of what a line does and feels, and its grammar (for sentences of its own)
     own: Option<(crate::understand::Understanding<'a>, crate::compose::Composer)>,
-    /// exchanges it has lived: what was said to it, and the answer it was taught or that was marked good (as Prim's
-    /// exchanges): its own answers, not strangers'
-    lived: Vec<(Vec<String>, String)>,
-    lived_log: std::fs::File,
 }
 
-/// how alike a line must be to a lived one for Darma to answer as it learned (set by hand)
-pub const LIVED_AT: f32 = 0.6;
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
 /// people's answers used (set by hand)
 pub const SOCIAL_AT: f32 = 0.8;
 pub const SOCIAL_WORDS: usize = 5;
 /// what Darma says when it cannot answer by itself: it asks to be taught
-pub const TEACH_ME: &str = "I don't understand that yet. What should I say?";
+pub const TEACH_ME: &str = "I don't understand that yet.";
 
 use crate::dialog::TALK_AT;
 
@@ -215,16 +209,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
-        // the exchanges lived before
-        if let Ok(s) = std::fs::read_to_string(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))) {
-            for l in s.lines() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                    let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    talk.lived.push((words_of(&g("line")), g("reply")));
-                }
-            }
-        }
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")) };
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -335,29 +320,6 @@ impl<'a> Talk<'a> {
     }
 
     /// what people answered to the turn most like this one, if one is alike enough
-    pub fn lived_count(&self) -> usize {
-        self.lived.len()
-    }
-
-    /// living an exchange: what was said, and the answer Darma was taught (or that was marked good); kept
-    pub fn live(&mut self, line: &str, reply: &str) {
-        let w = words_of(line);
-        if w.is_empty() || reply.trim().is_empty() {
-            return;
-        }
-        self.lived.retain(|(x, _)| *x != w);
-        self.lived.push((w, reply.trim().to_string()));
-        use std::io::Write;
-        let _ = writeln!(self.lived_log, "{}", serde_json::json!({"line": line, "reply": reply.trim()}));
-    }
-
-    /// an answer from what Darma lived: the lived line most alike to this one, if alike enough
-    fn lived_reply(&self, w: &[String]) -> Option<Reply> {
-        let d = self.dialog.as_ref()?;
-        let (s, (l, reply)) = self.lived.iter().map(|x| (d.alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
-        (s >= LIVED_AT).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2})", l.join(" ")), kind: "lived", recall: String::new(), ask: String::new() })
-    }
-
     /// what strangers' words may still say for Darma (as Raven for Prim): a social formula (a short line very like a
     /// greeting, thanks or goodbye people said) answered as people answered it, or a feeling answered as people
     /// answer that feeling. Nothing else
@@ -533,9 +495,6 @@ impl<'a> Talk<'a> {
                 _ => {}
             }
         }
-        if let Some(rep) = (!w.is_empty()).then(|| self.lived_reply(&w)).flatten() {
-            return rep;
-        }
         if w.is_empty() {
             r("", String::new(), "none")
         } else if crate::me::about_me(&w) {
@@ -644,26 +603,12 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
             let j = serde_json::json!({"said": rep.said, "why": rep.why, "kind": rep.kind, "recall": rep.recall, "ask": rep.ask, "told": talk.core.told});
             ("application/json", j.to_string())
         } else if head.starts_with("POST /rate") {
-            // a mark on an answer (sensible or not), kept for measuring: one line of JSON each; a good answer of
-            // Darma's own making is lived (it will answer so again)
+            // a mark on an answer (sensible or not), kept for measuring: one line of JSON each
             use std::io::Write as _;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("darma_ratings.jsonl") {
                 let _ = writeln!(f, "{}", body.trim().replace('\n', " "));
             }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
-                let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-                if g("mark") == "good" && !matches!(g("kind").as_str(), "told" | "unknown" | "lived") {
-                    talk.live(&g("line"), &g("said"));
-                }
-            }
             ("application/json", "{}".to_string())
-        } else if head.starts_with("POST /teach") {
-            // taught: what Darma should have said to a line; lived
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
-                let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-                talk.live(&g("line"), &g("reply"));
-            }
-            ("application/json", serde_json::json!({"lived": talk.lived_count()}).to_string())
         } else if head.starts_with("GET /self") {
             ("application/json", serde_json::json!({"self": talk.me.all()}).to_string())
         } else if head.starts_with("GET /state") {
