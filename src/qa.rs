@@ -176,23 +176,10 @@ pub struct Talk<'a> {
     /// exchanges): its own answers, not strangers'
     lived: Vec<(Vec<String>, String)>,
     lived_log: std::fs::File,
-    /// the word network imprinted (Primo's WordNet): what words mean, so a lived line is found in other words too
-    /// ("hi" for "hello")
-    words: Option<&'static crate::words::Read>,
-    /// what it read in the dictionary of what things are (its own core)
-    know: Option<crate::know::Know<'static>>,
-    /// how alike a line must be to a lived one (learned from chance pairs when there is a network)
-    lived_at: f32,
-    /// how alike two words must be to stand for each other (learned from chance pairs of words)
-    word_at: f32,
 }
 
-/// how alike a line must be to a lived one for Darma to answer as it learned, when it cannot learn it (no network)
-/// (set by hand)
+/// how alike a line must be to a lived one for Darma to answer as it learned (set by hand)
 pub const LIVED_AT: f32 = 0.6;
-/// with the network, the threshold is learned: the likeness that only this share of chance pairs of people's
-/// sentences (unrelated lines) reach
-pub const CHANCE: f32 = 0.005;
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
 /// people's answers used (set by hand)
 pub const SOCIAL_AT: f32 = 0.8;
@@ -228,30 +215,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), words: None, know: None, lived_at: LIVED_AT, word_at: 0.0, lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
-        // the dictionary: read once, its words' meanings and what things are
-        if let Some(r) = crate::words::Read::read(1) {
-            let r: &'static crate::words::Read = Box::leak(Box::new(r));
-            talk.words = Some(r);
-            talk.know = crate::know::Know::read(r, &crate::know::met_words());
-        }
-        // what chance likeness looks like: 400 people's sentences, each against the next ones (unrelated lines); the
-        // threshold is where only CHANCE of them reach
-        if let (Some(n), Some(d)) = (talk.words, talk.dialog.as_ref()) {
-            let s = d.sample(400);
-            let m = s.len();
-            let mut v: Vec<f32> = (0..s.len()).flat_map(|i| (1..=5).map(move |j| (i, (i + j * 37) % m))).map(|(i, j)| crate::words::Meaning::alike(n, s[i], s[j], &|x| d.idf(x))).collect();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            talk.lived_at = v[((1.0 - CHANCE) * v.len() as f32) as usize];
-            // and of words: the rare words of those sentences, each against others
-            let mut ws: Vec<&String> = s.iter().flat_map(|x| x.iter()).filter(|x| d.rare(x)).collect();
-            ws.sort();
-            ws.dedup();
-            let k = ws.len();
-            let mut v: Vec<f32> = (0..k).flat_map(|i| (1..=5).map(move |j| (i, (i + j * 53) % k))).filter(|(i, j)| i != j).map(|(i, j)| crate::words::Meaning::sim(n, ws[i], ws[j])).collect();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            talk.word_at = v.get(((1.0 - CHANCE) * v.len() as f32) as usize).copied().unwrap_or(0.0);
-        }
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
         // the exchanges lived before
         if let Ok(s) = std::fs::read_to_string(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))) {
             for l in s.lines() {
@@ -390,20 +354,8 @@ impl<'a> Talk<'a> {
     /// an answer from what Darma lived: the lived line most alike to this one, if alike enough
     fn lived_reply(&self, w: &[String]) -> Option<Reply> {
         let d = self.dialog.as_ref()?;
-        // alike in meaning (the word network), each word weighed by how rare it is in conversation; without the
-        // network, by shared runs and conversation meaning
-        let alike = |a: &[String], b: &[String]| match self.words {
-            Some(n) => crate::words::Meaning::alike(n, a, b, &|x| d.idf(x)),
-            None => d.alike(a, b),
-        };
-        // every rare word of the lived line (what it was about: "car") must have its like in this one: the least
-        // matched decides, as in a measurement
-        let holds = |lived: &[String]| match self.words {
-            Some(n) => lived.iter().filter(|x| d.rare(x)).all(|x| w.iter().any(|y| crate::words::Meaning::sim(n, x, y) >= self.word_at)),
-            None => true,
-        };
-        let (s, (l, reply)) = self.lived.iter().filter(|x| holds(&x.0)).map(|x| (alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
-        (s >= self.lived_at).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2}; chance pairs of lines reach {:.2}, of words {:.2})", l.join(" "), self.lived_at, self.word_at), kind: "lived", recall: String::new(), ask: String::new() })
+        let (s, (l, reply)) = self.lived.iter().map(|x| (d.alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
+        (s >= LIVED_AT).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2})", l.join(" ")), kind: "lived", recall: String::new(), ask: String::new() })
     }
 
     /// what strangers' words may still say for Darma (as Raven for Prim): a social formula (a short line very like a
@@ -562,39 +514,6 @@ impl<'a> Talk<'a> {
         w.first().map_or(true, |f| self.dialog.as_ref().map_or(true, |d| d.asks_yes_no(f)))
     }
 
-    /// "what is (a) X": what it read in the dictionary (the words of a question are read by hand rules: a copula
-    /// after "what", an article, one word)
-    fn read_what_is(&self, w: &[String]) -> Option<Reply> {
-        let k = self.know.as_ref()?;
-        let rest = match w {
-            [h, c, rest @ ..] if h == "what" && self.copulas.contains(c) => rest,
-            _ => return None,
-        };
-        let x = match rest {
-            [a, x] if matches!(a.as_str(), "a" | "an" | "the") => x,
-            [x] => x,
-            _ => return None,
-        };
-        let (a, said) = k.what_is(x)?;
-        let article = if x.starts_with(['a', 'e', 'i', 'o', 'u']) { "An" } else { "A" };
-        Some(Reply { said: format!("{article} {x} is {said}."), why: format!("I read it in the dictionary: {x} is {a}"), kind: "read", recall: String::new(), ask: String::new() })
-    }
-
-    /// "is (a) X (a) Y": a chain through what it read (yes), or nothing found within its reach (not as far as it
-    /// knows): only when both words were read
-    fn read_is_a(&self, w: &[String]) -> Option<Reply> {
-        let k = self.know.as_ref()?;
-        let c = w.first().filter(|c| self.copulas.contains(c))?;
-        let rest: Vec<&String> = w[1..].iter().filter(|x| !matches!(x.as_str(), "a" | "an" | "the")).collect();
-        let [x, y] = rest.as_slice() else { return None };
-        k.what_is(x)?;
-        k.what_is(y)?;
-        Some(match k.is_a(x, y) {
-            Some(chain) => Reply { said: "Yes.".into(), why: format!("I read: {}", chain.join("; ")), kind: "read", recall: String::new(), ask: String::new() },
-            None => Reply { said: "Not as far as I know.".into(), why: format!("what I read of what {x} {c} does not lead to {y}"), kind: "read", recall: String::new(), ask: String::new() },
-        })
-    }
-
     fn line_inner(&mut self, line: &str) -> Reply {
         let w = words_of(line);
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
@@ -634,7 +553,6 @@ impl<'a> Talk<'a> {
             match self.core.verify_reasoned(&crate::me::statement_order(&w), &self.copulas, 3.0) {
                 Some((true, why)) if why.is_empty() => r("Yes.", String::new(), "yes"),
                 Some((true, why)) => r("Yes.", format!("because {}", why.join("; ")), "yes"),
-                _ if self.read_is_a(&w).is_some() => self.read_is_a(&w).unwrap(),
                 Some((false, _)) => self.talk(&w).unwrap_or_else(|| r("Not as far as I know.", "I know these words, but not this of them".into(), "no")),
                 None => self.talk(&w).unwrap_or_else(|| r("I don't know.", "some of these words I was never told".into(), "unknown")),
             }
@@ -642,7 +560,7 @@ impl<'a> Talk<'a> {
             match self.core.answer_reasoned(&w, &self.copulas) {
                 (Some(x), why) if why.is_empty() => r(&x, String::new(), "answer"),
                 (Some(x), why) => r(&x, format!("because {}", why.join("; ")), "answer"),
-                (None, _) => self.read_what_is(&w).or_else(|| self.talk(&w)).unwrap_or_else(|| r(TEACH_ME, "nothing I was told stands out as the answer".into(), "unknown")),
+                (None, _) => self.talk(&w).unwrap_or_else(|| r(TEACH_ME, "nothing I was told stands out as the answer".into(), "unknown")),
             }
         } else {
             // a social formula or a feeling ("hello", "good night") is answered, not kept as a fact; anything else is

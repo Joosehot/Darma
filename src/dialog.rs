@@ -253,18 +253,7 @@ impl Dialog {
         Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default(), meaning, resonance: RESONANCE, nearest_words: Default::default(), widen: true })
     }
 
-    /// a fixed sample of people's sentences (every k-th), for learning what chance likeness looks like
-    pub fn sample(&self, n: usize) -> Vec<&[String]> {
-        let k = (self.units.len() / n.max(1)).max(1);
-        self.units.iter().step_by(k).map(|u| u.0.as_slice()).filter(|w| !w.is_empty()).take(n).collect()
-    }
-
-    /// a word rare enough to be what a line is about (in fewer than one sentence in a hundred, as the topic)
-    pub fn rare(&self, w: &str) -> bool {
-        (*self.df.get(w).unwrap_or(&0) as usize) * 100 < self.units.len()
-    }
-
-    pub fn idf(&self, r: &str) -> f32 {
+    fn idf(&self, r: &str) -> f32 {
         (self.units.len() as f32 / *self.df.get(r).unwrap_or(&1) as f32).ln()
     }
 
