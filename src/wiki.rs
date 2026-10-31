@@ -123,14 +123,19 @@ impl Wiki {
     }
 
     /// the sentences that answer a heard question: those holding every word it asks with (found through the rarest
-    /// word's register), then cpt::fit; the article whose subject is a word of the question first, then the best
-    /// fitting, the shortest
+    /// word's register), from the article of what is asked only (another article's sentence that holds the words
+    /// says something else: "the Death Star is a moon-sized station" is not "the moon is a star"), then cpt::fit; the
+    /// best fitting, the article's sentences in their order
     pub fn answer(&self, q: &[Node], small: &std::collections::HashSet<String>) -> Vec<(f32, &Fact)> {
         let asked = crate::cpt::asked_with(q);
         let Some(rare) = asked.iter().filter(|w| !small.contains(**w) || asked.len() == 1).filter_map(|w| self.index.get(*w)).min_by_key(|v| v.len()) else { return Vec::new() };
         let words: Vec<String> = q.iter().map(|x| x.lemma.clone()).chain(q.iter().map(|x| x.word.clone())).collect();
-        let about = |f: &Fact| words.contains(&self.titles[f.title as usize].to_lowercase());
-        let mut out: Vec<(f32, u32, &Fact)> = rare.iter().map(|&i| (i, &self.facts[i as usize])).filter_map(|(i, f)| crate::cpt::fit(q, &f.nodes).map(|s| (s + if about(f) { 10.0 } else { 0.0 }, i, f))).collect();
+        // the article asked about: every word of its title in the question ("albert einstein")
+        let about = |f: &Fact| {
+            let tw = words_of(&self.titles[f.title as usize]);
+            !tw.is_empty() && tw.iter().all(|x| words.contains(x) || words.contains(&crate::cpt::base_of(x)))
+        };
+        let mut out: Vec<(f32, u32, &Fact)> = rare.iter().map(|&i| (i, &self.facts[i as usize])).filter(|(_, f)| about(f)).filter_map(|(i, f)| crate::cpt::fit(q, &f.nodes).map(|s| (s, i, f))).collect();
         // the article's own sentences in their order: its first says what it is
         out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
         out.into_iter().map(|(s, _, f)| (s, f)).collect()

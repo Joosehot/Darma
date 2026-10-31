@@ -148,6 +148,16 @@ pub fn fit(q: &[Node], f: &[Node]) -> Option<f32> {
     if asked.is_empty() || !asked.iter().all(|w| fl.contains(w)) {
         return None;
     }
+    // and they stand where the sentence says what it says: at its core or right under it, not deep inside a part of it
+    // ("martial arts that come from certain countries" does not say art is a country); or in its main clause, before
+    // the first word that opens another one (English grammar set by hand, for hearing misplaces the core: "Dogs are
+    // mammals, usually kept as pets" heard with "kept" at its core)
+    let opens = f.iter().position(|x| matches!(x.word.as_str(), "that" | "which" | "who" | "whom" | "whose" | "where" | "while" | "when" | "because")).unwrap_or(f.len());
+    let top = |i: usize| f[i].head == 0 || f[f[i].head - 1].head == 0 || i < opens;
+    let content = |w: &str| !matches!(w, "be" | "have" | "do") && w.chars().any(|c| c.is_alphabetic());
+    if !asked.iter().filter(|w| content(w)).all(|w| (0..f.len()).any(|i| f[i].lemma == *w && top(i))) {
+        return None;
+    }
     if let (Some(a), Some(b)) = (doer(q), doer(f)) {
         if a != b && !WH.contains(&a.as_str()) {
             return None;
@@ -171,12 +181,12 @@ pub fn fit(q: &[Node], f: &[Node]) -> Option<f32> {
         };
         // the filler stands at the sentence's core or right under it (not inside a name: "resonant" in "a resonant
         // quantum-spirited model" says no how)
-        let near_core = |x: &Node| x.head == 0 || f[x.head - 1].head == 0;
+        let near_core = |i: usize| top(i);
         // how one is is not what one is
         if q[h].lemma == "how" && names_a_thing(f) {
             return None;
         }
-        if !f.iter().any(|x| !ql.contains(x.lemma.as_str()) && x.lemma.chars().any(|c| c.is_alphanumeric()) && kind(&x.pos) && near_core(x)) {
+        if !(0..f.len()).any(|i| { let x = &f[i]; !ql.contains(x.lemma.as_str()) && x.lemma.chars().any(|c| c.is_alphanumeric()) && kind(&x.pos) && near_core(i) }) {
             return None;
         }
     }
@@ -242,4 +252,9 @@ pub fn show_cmd(words: &[String]) {
     for x in c.hear(&w) {
         println!("{:<12} {:<6} {:<8} -> {}", x.word, x.pos, x.rel, if x.head == 0 { "(core)".to_string() } else { w[x.head - 1].clone() });
     }
+}
+
+/// a plural's singular as written ("dogs" -> "dog"), for matching a title: the last "s" off (a rule set by hand)
+pub fn base_of(w: &str) -> String {
+    w.strip_suffix('s').filter(|x| x.len() > 2).unwrap_or(w).to_string()
 }
