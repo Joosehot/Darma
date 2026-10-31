@@ -21,6 +21,7 @@ mod hear;
 mod cpt;
 mod wiki;
 mod fast;
+mod will;
 
 use clap::{Parser, Subcommand};
 

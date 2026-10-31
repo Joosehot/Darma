@@ -176,6 +176,8 @@ pub struct Talk<'a> {
     cpt: Option<crate::cpt::Cpt>,
     /// what it read in Wikipedia (struck before by `darma wiki-test`)
     wiki: Option<crate::wiki::Wiki>,
+    /// its will: the stances it chooses itself, from what it lived and read
+    will: crate::will::Will,
 }
 
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
@@ -213,7 +215,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), cpt: crate::cpt::Cpt::load(1), wiki: crate::wiki::Wiki::load() };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), cpt: crate::cpt::Cpt::load(1), wiki: crate::wiki::Wiki::load(), will: crate::will::Will::load(&format!("{}_will.json", memory.trim_end_matches(".txt"))) };
         // what it is doing, as it is: talking with whoever speaks to it (seen of itself, not told)
         talk.me.happened("doing", "i am talking with you");
         if seed_ud {
@@ -378,7 +380,22 @@ impl<'a> Talk<'a> {
         if !rep.ask.is_empty() {
             self.me.happened("asked", &format!("i asked {}", words_of(&rep.ask).join(" ")));
         }
+        // its will lives it: the things spoken of, and whether it could answer (a question it could not answer, one it
+        // did; a stance asked is not counted)
+        let things = self.things(&words_of(line));
+        if !things.is_empty() && rep.kind != "will" {
+            let answered = if rep.kind == "unknown" || rep.said.starts_with("I don't know") { Some(false) } else if self.asks(line, &words_of(line)) { Some(true) } else { None };
+            self.will.lived(&things, answered);
+        }
         rep
+    }
+
+    /// the speaker's mark on an answer: its will lives it too
+    pub fn marked(&mut self, line: &str, good: bool) {
+        let things = self.things(&words_of(line));
+        if !things.is_empty() {
+            self.will.marked(&things, good);
+        }
     }
 
     /// what the speaker says of themselves: kept in the world's memory as "you ..." ("my name is joose" -> "your
@@ -497,6 +514,67 @@ impl<'a> Talk<'a> {
         } else {
             (w.to_vec(), self.said.iter().map(|s| s.join(" ")).collect(), "world")
         }
+    }
+
+    /// the things a line speaks of: its nouns as hearing reads them, in base form, beyond the commonest words and the
+    /// ones speaking (I, you)
+    fn things(&self, w: &[String]) -> Vec<String> {
+        self.things_said(w).into_iter().map(|x| x.0).collect()
+    }
+
+    /// the things a line speaks of, each in base form (as a noun) and as it was said: its nouns, and what stands as a
+    /// doer or done-to whatever hearing read its class as ("music" read as a describing word), beyond the commonest
+    /// words and the ones speaking
+    fn things_said(&self, w: &[String]) -> Vec<(String, String)> {
+        let Some(c) = self.cpt.as_ref() else { return Vec::new() };
+        let mut v: Vec<(String, String)> = c
+            .hear(w)
+            .into_iter()
+            .filter(|x| (matches!(x.pos.as_str(), "NOUN" | "PROPN") || matches!(x.rel.as_str(), "obj" | "nsubj" | "obl")) && !matches!(x.pos.as_str(), "PRON" | "DET" | "AUX" | "VERB"))
+            .filter(|x| !c.small.contains(&x.word) && !matches!(x.word.as_str(), "darma" | "i" | "you" | "me" | "yourself" | "myself"))
+            .map(|x| (c.lemma_of(&x.word, "NOUN"), x.word))
+            .collect();
+        v.sort();
+        v.dedup_by(|a, b| a.0 == b.0);
+        v
+    }
+
+    /// its will asked or told: "do you like X", "what do you think about X" (asked of its stance), "you like X" (told
+    /// a stance: no reason, it chooses itself). The verbs of liking and the "think about" frame are set by hand
+    fn stance(&mut self, line: &str, w: &[String]) -> Option<Reply> {
+        if !crate::me::about_me(w) {
+            return None;
+        }
+        let liking = ["like", "love", "enjoy", "hate", "prefer"];
+        let lemmas: Vec<String> = self.cpt.as_ref()?.hear(&crate::me::to_me(w)).into_iter().map(|x| x.lemma).collect();
+        let think_about = lemmas.iter().any(|x| x == "think") && w.iter().any(|x| x == "about" || x == "of");
+        if !lemmas.iter().any(|x| liking.contains(&x.as_str())) && !think_about {
+            return None;
+        }
+        // the thing: the last one said (in "do you like music" the one liked)
+        let ts = self.things_said(w);
+        let (mut thing, mut said_as) = w.iter().rev().find_map(|x| ts.iter().find(|t| t.1 == *x).cloned())?;
+        // a name of two words ("albert einstein") when its article is one
+        if let Some(i) = w.iter().rposition(|x| *x == said_as).filter(|&i| i > 0) {
+            let two = format!("{} {}", w[i - 1], w[i]);
+            if self.wiki.as_ref().is_some_and(|wk| wk.lead(&two).is_some()) {
+                thing = two.clone();
+                said_as = two.split(' ').map(|p| p.get(..1).map(|f| f.to_uppercase() + &p[1..]).unwrap_or_default()).collect::<Vec<_>>().join(" ");
+            }
+        }
+        let asked = self.asks(line, w);
+        // what it read of it, said inside its own sentence (a capital kept only for a name)
+        let read = self.wiki.as_ref().and_then(|wk| wk.lead(&thing)).map(|r| {
+            let first = r.split(' ').next().unwrap_or("").to_lowercase();
+            let name = self.cpt.as_ref().is_some_and(|c| c.hear(&words_of(&r)).first().is_some_and(|x| x.pos == "PROPN")) && first != thing && crate::cpt::base_of(&first) != thing;
+            if name || said_as.chars().next().is_some_and(|c| c.is_uppercase()) { r } else { r.get(..1).map(|f| f.to_lowercase() + &r[1..]).unwrap_or(r) }
+        });
+        let (s, reasons, before) = self.will.choose(&thing, read.as_deref());
+        let mut said = crate::will::say(&said_as, &s, &reasons, before.as_deref());
+        if !asked {
+            said = format!("I choose that myself. {said}");
+        }
+        Some(Reply { said, why: format!("my will: weighed {:.2} (curiosity, understanding, connection by my temperament {:.2}/{:.2}/{:.2})", s.weight, self.will.temperament[0], self.will.temperament[1], self.will.temperament[2]), kind: "will", recall: String::new(), ask: String::new() })
     }
 
     /// conscious parallel thinking, v0: the question heard into a structure, every known sentence heard the same
@@ -628,6 +706,9 @@ impl<'a> Talk<'a> {
                 }
             }
         }
+        if let Some(rep) = self.stance(line, &w) {
+            return rep;
+        }
         if let Some(rep) = self.think(line, &w) {
             return rep;
         }
@@ -743,6 +824,10 @@ pub fn serve(dim: usize, seed: u64, memory: &str, port: u16, seed_ud: bool) {
             use std::io::Write as _;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("darma_ratings.jsonl") {
                 let _ = writeln!(f, "{}", body.trim().replace('\n', " "));
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+                let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                talk.marked(&g("line"), g("mark") == "good");
             }
             ("application/json", "{}".to_string())
         } else if head.starts_with("GET /self") {

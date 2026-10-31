@@ -111,6 +111,14 @@ impl Wiki {
         serde_json::from_str(&std::fs::read_to_string(best?.1).ok()?).ok()
     }
 
+    /// the first sentence of a thing's own article ("music": "Music is a form of art ...")
+    pub fn lead(&self, thing: &str) -> Option<String> {
+        let t = self.titles.iter().position(|x| { let x = x.to_lowercase(); x == thing || crate::cpt::base_of(&x) == thing })? as u32;
+        let i = self.facts.partition_point(|f| f.title < t);
+        let f = self.facts.get(i).filter(|f| f.title == t)?;
+        Some(f.text.trim().to_string())
+    }
+
     pub fn strike_or_load(cpt: &Cpt, limit: usize) -> Option<(Wiki, bool)> {
         let path = format!("data/strike/wiki_simple_{limit}.json");
         if let Some(w) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Wiki>(&s).ok()) {
