@@ -147,6 +147,11 @@ impl Syntax {
         self.atoms.extend(names.into_iter().zip(made));
     }
 
+    /// every atom these sentences need, made once (so reading can run on every core)
+    pub fn prepare_for(&mut self, sets: &[&[Vec<Tok>]]) {
+        self.prepare(sets)
+    }
+
     fn bound(&self, role: &str, value: &str) -> HVec {
         let r = format!("r:{role}");
         let v = format!("v:{value}");
