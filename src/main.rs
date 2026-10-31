@@ -20,6 +20,7 @@ mod speak;
 mod hear;
 mod cpt;
 mod wiki;
+mod fast;
 
 use clap::{Parser, Subcommand};
 
@@ -70,6 +71,8 @@ enum Cmd {
     },
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
+    /// the GPU reading against the wave-by-wave reading (same answers, faster)
+    FastCheck,
     /// Wikipedia's leads heard and struck into Darma's knowledge, with a few questions
     WikiTest {
         #[arg(default_value_t = 5000)]
@@ -136,6 +139,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::FastCheck => fast::check(),
         Cmd::WikiTest { articles } => wiki::test(articles),
         Cmd::Hear { words } => cpt::show_cmd(&words),
         Cmd::HearEval { strikes } => hear::eval(cli.seed, strikes),

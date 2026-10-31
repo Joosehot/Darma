@@ -152,6 +152,44 @@ impl Syntax {
         self.prepare(sets)
     }
 
+    /// an atom by its name ("r:w", "v:dog"), made if it was never needed before (not kept)
+    pub fn atom_pub(&self, name: &str) -> HVec {
+        self.atoms.get(name).cloned().unwrap_or_else(|| self.make(name))
+    }
+
+    pub fn bound_pub(&self, role: &str, value: &str) -> HVec {
+        self.bound(role, value)
+    }
+
+    /// the class and role prototypes (for reading many sentences at once)
+    pub fn protos(&self) -> (&[HVec], &[HVec]) {
+        (&self.pos, &self.rel)
+    }
+
+    /// the parts of a place's wave for its class (role, value)
+    pub fn class_feats(s: &[Tok], i: usize) -> Vec<(String, String)> {
+        class_parts(s, i).into_iter().map(|(r, v)| (r.to_string(), v)).collect()
+    }
+
+    /// the parts of a place's wave for its role: its class parts and the parts read from the classes around it
+    pub fn role_feats(&self, s: &[Tok], i: usize, tags: &[usize]) -> Vec<(String, String)> {
+        let mut p = Self::class_feats(s, i);
+        let t = |k: isize| -> String {
+            let j = i as isize + k;
+            if j < 0 { "<s>".into() } else if j as usize >= s.len() { "</s>".into() } else { self.pos_names[tags[j as usize]].clone() }
+        };
+        p.push(("p".into(), t(0)));
+        for (r, k) in [("pl1", -1), ("pl2", -2), ("pr1", 1), ("pr2", 2)] {
+            p.push((r.into(), t(k)));
+        }
+        p.push(("p_pair".into(), format!("{}>{}", t(-1), t(0))));
+        p.push(("p_pair_r".into(), format!("{}>{}", t(0), t(1))));
+        let is_verb = |j: usize| matches!(self.pos_names[tags[j]].as_str(), "VERB" | "AUX");
+        p.push(("verb_before".into(), if (0..i).any(is_verb) { "yes" } else { "no" }.into()));
+        p.push(("verb_after".into(), if (i + 1..s.len()).any(is_verb) { "yes" } else { "no" }.into()));
+        p
+    }
+
     fn bound(&self, role: &str, value: &str) -> HVec {
         let r = format!("r:{role}");
         let v = format!("v:{value}");
@@ -171,20 +209,10 @@ impl Syntax {
     /// the wave of a place for its role: its class wave, its own class and its neighbours' (as read), and whether a
     /// verb comes before it or after it in the sentence (as read)
     fn role_wave(&self, s: &[Tok], i: usize, tags: &[usize]) -> HVec {
-        let mut v = self.class_wave(s, i);
-        let t = |k: isize| -> String {
-            let j = i as isize + k;
-            if j < 0 { "<s>".into() } else if j as usize >= s.len() { "</s>".into() } else { self.pos_names[tags[j as usize]].clone() }
-        };
-        v.add(&self.bound("p", &t(0)));
-        for (r, k) in [("pl1", -1), ("pl2", -2), ("pr1", 1), ("pr2", 2)] {
-            v.add(&self.bound(r, &t(k)));
+        let mut v = HVec::zero(SYNTAX_D);
+        for (r, x) in self.role_feats(s, i, tags) {
+            v.add(&self.bound(&r, &x));
         }
-        v.add(&self.bound("p_pair", &format!("{}>{}", t(-1), t(0))));
-        v.add(&self.bound("p_pair_r", &format!("{}>{}", t(0), t(1))));
-        let is_verb = |j: usize| matches!(self.pos_names[tags[j]].as_str(), "VERB" | "AUX");
-        v.add(&self.bound("verb_before", if (0..i).any(is_verb) { "yes" } else { "no" }));
-        v.add(&self.bound("verb_after", if (i + 1..s.len()).any(is_verb) { "yes" } else { "no" }));
         v
     }
 

@@ -56,7 +56,7 @@ fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
-fn bucket(d: usize) -> &'static str {
+pub fn bucket(d: usize) -> &'static str {
     match d {
         1 => "1",
         2 => "2",
@@ -70,7 +70,7 @@ pub struct Hear {
     seed: u64,
     atoms: std::sync::RwLock<HashMap<String, HVec>>,
     attach: Vec<HVec>,
-    small: HashSet<String>,
+    pub small: HashSet<String>,
 }
 
 impl Hear {
@@ -85,6 +85,26 @@ impl Hear {
 
     /// the wave of "word d completes word h" (h = 0: d is the sentence's core); words are 1-based, classes as read
     fn pair(&self, w: &[String], c: &[String], d: usize, h: usize) -> Vec<HVec> {
+        self.pair_feats(w, c, d, h).into_iter().map(|(r, x)| self.atom(&format!("r:{r}")).bind(&self.atom(&format!("v:{x}")))).collect()
+    }
+
+    /// an atom by its name, made if it was never needed before (not kept)
+    pub fn atom_fresh(&self, n: &str) -> HVec {
+        self.atoms.read().unwrap().get(n).cloned().unwrap_or_else(|| HVec::random(HEAR_D, &mut ChaCha8Rng::seed_from_u64(fnv(n) ^ self.seed)))
+    }
+
+    /// a part's wave made without keeping its atoms
+    pub fn bound_fresh(&self, role: &str, value: &str) -> HVec {
+        let make = |n: &str| self.atoms.read().unwrap().get(n).cloned().unwrap_or_else(|| HVec::random(HEAR_D, &mut ChaCha8Rng::seed_from_u64(fnv(n) ^ self.seed)));
+        make(&format!("r:{role}")).bind(&make(&format!("v:{value}")))
+    }
+
+    pub fn attach(&self) -> &[HVec] {
+        &self.attach
+    }
+
+    /// the parts of "word d completes word h" (role, value), in the order of the attachment's registers
+    pub fn pair_feats(&self, w: &[String], c: &[String], d: usize, h: usize) -> Vec<(&'static str, String)> {
         let cls = |k: usize| -> &str { if k == 0 { "ROOT" } else if k > c.len() { "END" } else { &c[k - 1] } };
         let sm = |k: usize| -> &str { if k == 0 || k > w.len() || !self.small.contains(&w[k - 1]) { "-" } else { &w[k - 1] } };
         let (dc, hc) = (cls(d), cls(h));
@@ -94,7 +114,7 @@ impl Hear {
         let between = |p: &dyn Fn(&str) -> bool| h != 0 && (lo + 1..hi).any(|k| p(&c[k - 1]));
         let verb = between(&|x| x == "VERB");
         let punct = between(&|x| x == "PUNCT");
-        let parts: Vec<(&str, String)> = vec![
+        let parts: Vec<(&'static str, String)> = vec![
             ("pair", format!("{dc}>{hc}")),
             ("pairdir", format!("{dc}>{hc} {dir}")),
             ("pairdist", format!("{dc}>{hc} {dir} {dist}")),
@@ -106,7 +126,7 @@ impl Hear {
             ("verb_between", format!("{dc}>{hc} {verb}")),
             ("punct_between", format!("{dc}>{hc} {punct}")),
         ];
-        parts.into_iter().map(|(r, x)| self.atom(&format!("r:{r}")).bind(&self.atom(&format!("v:{x}")))).collect()
+        parts
     }
 
     fn score(&self, v: &[HVec]) -> f32 {

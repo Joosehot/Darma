@@ -25,11 +25,11 @@ pub struct Node {
 }
 
 pub struct Cpt {
-    sx: Syntax,
-    hear: Hear,
+    pub sx: Syntax,
+    pub hear: Hear,
     #[allow(dead_code)]
     pub speak: Speak,
-    lemma: HashMap<(String, String), String>,
+    pub lemma: HashMap<(String, String), String>,
     pub small: HashSet<String>,
     cache: std::sync::Mutex<HashMap<String, Vec<Node>>>,
 }

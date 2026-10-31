@@ -68,7 +68,22 @@ impl Wiki {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let facts: Vec<Fact> = par_map(&sents, |(t, s)| Fact { title: *t, text: s.clone(), nodes: cpt.hear_fresh(&words_of(s), ".") });
+        // heard with the GPU (the same reading, faster) in batches, or wave by wave on every core without one
+        let facts: Vec<Fact> = match crate::fast::Reader::new(cpt) {
+            Some(mut r) => {
+                let mut out = Vec::with_capacity(sents.len());
+                let t0 = std::time::Instant::now();
+                for (b, ch) in sents.chunks(20000).enumerate() {
+                    let ws: Vec<Vec<String>> = ch.iter().map(|(_, s)| words_of(s)).collect();
+                    let nodes = r.read(cpt, &ws, ".");
+                    out.extend(ch.iter().zip(nodes).map(|((t, s), n)| Fact { title: *t, text: s.clone(), nodes: n }));
+                    eprintln!("  heard {} of {} sentences on the GPU, {:.0} s", out.len(), sents.len(), t0.elapsed().as_secs_f64());
+                    let _ = b;
+                }
+                out
+            }
+            None => par_map(&sents, |(t, s)| Fact { title: *t, text: s.clone(), nodes: cpt.hear_fresh(&words_of(s), ".") }),
+        };
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
         for (i, f) in facts.iter().enumerate() {
             let mut ls: Vec<&str> = f.nodes.iter().filter(|n| n.pos != "PUNCT" && n.pos != "DET").map(|n| n.lemma.as_str()).collect();
