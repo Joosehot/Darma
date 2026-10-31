@@ -60,6 +60,9 @@ pub struct Dialog {
     yes_no: HashMap<String, (u32, u32)>,
     /// what people most often answered with a question of their own (what they say when they need more to go on)
     pub ask_back: Vec<String>,
+    /// how people turn a question back after saying their own part ("I like it. How about you?"): the short question
+    /// with "you" that most often ends a turn whose earlier sentence begins with "I"
+    pub turn_back: Option<String>,
     /// every sentence of every turn: its words, its text, the turn it is in, and whether it ends that turn
     units: Vec<(Vec<String>, String, usize, bool)>,
     /// the sentence before each sentence in its dialogue
@@ -186,6 +189,20 @@ impl Dialog {
         let mut ask_back: Vec<(String, u32)> = back.into_iter().collect();
         ask_back.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let ask_back: Vec<String> = ask_back.into_iter().take(8).map(|x| x.0).collect();
+        let mut turned: HashMap<String, u32> = HashMap::new();
+        for (_, text, _) in &turns {
+            let ss = sentences(text);
+            if ss.len() < 2 {
+                continue;
+            }
+            let last = tidy(ss[ss.len() - 1].trim()).trim().to_string();
+            let lw = tokens(&last);
+            let said_own = ss[..ss.len() - 1].iter().any(|s| tokens(s).first().is_some_and(|f| f == "i"));
+            if said_own && last.ends_with('?') && lw.len() <= 4 && lw.iter().any(|x| x == "you") {
+                *turned.entry(last).or_default() += 1;
+            }
+        }
+        let turn_back = turned.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))).map(|x| x.0);
         // the sentences, each with the turn it is in and whether it ends it
         let mut units: Vec<(Vec<String>, String, usize, bool)> = Vec::new();
         let mut unit_prev: Vec<Option<usize>> = Vec::new();
@@ -250,7 +267,7 @@ impl Dialog {
             v.add_scaled(&mean, -k);
             *v = crate::memory::normalised(v.clone());
         }
-        Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default(), meaning, resonance: RESONANCE, nearest_words: Default::default(), widen: true })
+        Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, turn_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default(), meaning, resonance: RESONANCE, nearest_words: Default::default(), widen: true })
     }
 
     fn idf(&self, r: &str) -> f32 {

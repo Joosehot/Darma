@@ -429,6 +429,18 @@ impl<'a> Talk<'a> {
     /// what was said of Darma itself: kept in its self (told), or asked of its self (questions); a question of
     /// itself is answered only from what it knows of itself, never as some person in a conversation answered it
     fn of_me(&mut self, asked: bool, w: &[String]) -> Reply {
+        let mut rep = self.of_me_inner(asked, w);
+        // not knowing something of itself, it says so and turns the question to the one asking, as people do
+        if rep.kind == "unknown" && asked {
+            if let Some(b) = self.dialog.as_ref().and_then(|d| d.turn_back.clone()) {
+                rep.said = format!("I don't know yet. {b}");
+                rep.why = format!("{}; so I turn it to you, as people do", rep.why);
+            }
+        }
+        rep
+    }
+
+    fn of_me_inner(&mut self, asked: bool, w: &[String]) -> Reply {
         let r = |said: String, why: String, kind| Reply { said, why, kind, recall: String::new(), ask: String::new() };
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
         let q = crate::me::to_me(&crate::me::statement_order(w));
@@ -496,10 +508,28 @@ impl<'a> Talk<'a> {
         }
         let (q, known, whose) = self.known_for(w);
         let qn = cpt.hear_as(&q, "?");
+        let say = |f: &[crate::cpt::Node]| self.me.spell(&crate::cpt::say(f));
+        // asked to tell of itself ("tell me something about yourself"): it says what it knows of itself, what it is
+        // first ("tell" asks for what is known: a rule set by hand)
+        if whose == "me" && qn.iter().any(|x| x.lemma == "tell") && q.iter().any(|x| x == "myself" || x == "i" || x == "me") {
+            let mut fs: Vec<Vec<crate::cpt::Node>> = known.iter().map(|k| cpt.hear(&words_of(k))).collect();
+            fs.sort_by_key(|f| !crate::cpt::names_a_thing(f));
+            // each says something the ones before did not (a word beyond the commonest)
+            let mut told: std::collections::HashSet<String> = Default::default();
+            let mut said: Vec<String> = Vec::new();
+            for f in &fs {
+                let new: Vec<String> = f.iter().map(|x| x.lemma.clone()).filter(|l| !cpt.small.contains(l) && !told.contains(l)).collect();
+                if new.is_empty() || said.len() == 3 {
+                    continue;
+                }
+                told.extend(new);
+                said.push(say(f));
+            }
+            return Some(Reply { said: said.join(" "), why: format!("heard: {}; asked to tell of myself: what I know of myself", crate::cpt::Cpt::show(&qn)), kind: "cpt", recall: String::new(), ask: String::new() });
+        }
         let heard = crate::cpt::Cpt::show(&qn);
         let hole = crate::cpt::hole(&qn);
         let facts: Vec<(String, Vec<crate::cpt::Node>)> = known.iter().map(|k| (k.clone(), cpt.hear(&words_of(k)))).collect();
-        let say = |f: &[crate::cpt::Node]| self.me.spell(&crate::cpt::say(f));
         let r = |said: String, why: String| Some(Reply { said, why, kind: "cpt", recall: String::new(), ask: String::new() });
         // recall: the known sentences that answer it, the best fitting first (at most two)
         // of those that answer: the best fitting, then the one saying least beyond the question (the most to the point)
