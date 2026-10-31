@@ -174,6 +174,8 @@ pub struct Talk<'a> {
     own: Option<(crate::understand::Understanding<'a>, crate::compose::Composer)>,
     /// conscious parallel thinking: hearing, and thoughts on what is heard and known
     cpt: Option<crate::cpt::Cpt>,
+    /// what it read in Wikipedia (struck before by `darma wiki-test`)
+    wiki: Option<crate::wiki::Wiki>,
 }
 
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
@@ -211,7 +213,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), cpt: crate::cpt::Cpt::load(1) };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), cpt: crate::cpt::Cpt::load(1), wiki: crate::wiki::Wiki::load() };
         // what it is doing, as it is: talking with whoever speaks to it (seen of itself, not told)
         talk.me.happened("doing", "i am talking with you");
         if seed_ud {
@@ -553,6 +555,13 @@ impl<'a> Talk<'a> {
             let said: Vec<String> = near.iter().take(2).map(|x| say(&x.1 .1)).collect();
             let dunno = if whose == "me" { "I don't know that about myself." } else if whose == "you" { "I don't know that about you." } else { "I don't know." };
             return r(format!("{dunno} {}", said.join(" ")), format!("heard: {heard}; nothing I know answers it; nearest: what I know of {} in the same way", crate::cpt::doer(&qn).unwrap_or_default()));
+        }
+        // what it read: of the world, Wikipedia's sentences that answer it
+        if whose == "world" {
+            if let Some((_, f)) = self.wiki.as_ref().and_then(|wk| wk.answer(&qn, &cpt.small).into_iter().next().map(|(s, f)| (s, (f.text.clone(), wk.titles[f.title as usize].clone())))) {
+                let yes = if hole.is_none() { "Yes. " } else { "" };
+                return r(format!("{yes}{}", f.0), format!("heard: {heard}; I read it in Wikipedia (\"{}\")", f.1));
+            }
         }
         // ask back: when it knows nothing of what was asked, it asks as people ask when they need more
         if whose != "me" {

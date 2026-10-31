@@ -19,6 +19,7 @@ mod syntax;
 mod speak;
 mod hear;
 mod cpt;
+mod wiki;
 
 use clap::{Parser, Subcommand};
 
@@ -69,6 +70,11 @@ enum Cmd {
     },
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
+    /// Wikipedia's leads heard and struck into Darma's knowledge, with a few questions
+    WikiTest {
+        #[arg(default_value_t = 5000)]
+        articles: usize,
+    },
     /// how Darma hears a sentence (classes, roles, core words)
     Hear { words: Vec<String> },
     /// hearing: each word's core word (a tree), measured on UD's test split
@@ -130,6 +136,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::WikiTest { articles } => wiki::test(articles),
         Cmd::Hear { words } => cpt::show_cmd(&words),
         Cmd::HearEval { strikes } => hear::eval(cli.seed, strikes),
         Cmd::SpeakEval { strikes } => speak::eval(cli.seed, strikes),

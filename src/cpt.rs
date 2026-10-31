@@ -9,13 +9,12 @@
 use crate::hear::Hear;
 use crate::speak::Speak;
 use crate::syntax::{Syntax, Tok};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 /// the question words: a hole in what is asked
 pub const WH: [&str; 7] = ["what", "who", "where", "when", "why", "how", "which"];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub word: String,
     pub lemma: String,
@@ -32,7 +31,7 @@ pub struct Cpt {
     pub speak: Speak,
     lemma: HashMap<(String, String), String>,
     pub small: HashSet<String>,
-    cache: RefCell<HashMap<String, Vec<Node>>>,
+    cache: std::sync::Mutex<HashMap<String, Vec<Node>>>,
 }
 
 /// base forms as people marked them in UD, by word and class (the commonest lemma of each written form as that class:
@@ -72,9 +71,16 @@ impl Cpt {
 
     pub fn hear_as(&self, w: &[String], mark: &str) -> Vec<Node> {
         let key = format!("{} {mark}", w.join(" "));
-        if let Some(n) = self.cache.borrow().get(&key) {
+        if let Some(n) = self.cache.lock().unwrap().get(&key) {
             return n.clone();
         }
+        let nodes = self.hear_fresh(w, mark);
+        self.cache.lock().unwrap().insert(key, nodes.clone());
+        nodes
+    }
+
+    /// a sentence heard without keeping it (for reading many at once, on every core)
+    pub fn hear_fresh(&self, w: &[String], mark: &str) -> Vec<Node> {
         let mut toks: Vec<Tok> = w.iter().map(|x| Tok { word: x.clone(), cap: x == "i", pos: String::new(), rel: String::new() }).collect();
         toks.push(Tok { word: mark.to_string(), cap: false, pos: String::new(), rel: String::new() });
         let mut w: Vec<String> = w.to_vec();
@@ -85,7 +91,6 @@ impl Cpt {
         let heads = if w.is_empty() { Vec::new() } else { self.hear.heads(&w, &classes) };
         let n = w.len() - 1;
         let nodes: Vec<Node> = (0..n).map(|i| Node { word: w[i].clone(), lemma: self.lemma.get(&(w[i].clone(), classes[i].clone())).cloned().unwrap_or_else(|| w[i].clone()), pos: classes[i].clone(), rel: self.sx.rel_names[roles[i]].clone(), head: if heads[i] > n { 0 } else { heads[i] } }).collect();
-        self.cache.borrow_mut().insert(key, nodes.clone());
         nodes
     }
 
@@ -126,9 +131,10 @@ pub fn hole(n: &[Node]) -> Option<usize> {
 
 /// the words a question asks with: all but its hole, its marks, and a "do" that only carries the question (English
 /// grammar: "do" stands for any doing, a rule set by hand)
-fn asked_with(q: &[Node]) -> Vec<&str> {
+pub fn asked_with(q: &[Node]) -> Vec<&str> {
     let h = hole(q);
-    q.iter().enumerate().filter(|(i, x)| Some(*i) != h && x.lemma != "do" && x.lemma.chars().any(|c| c.is_alphanumeric())).map(|(_, x)| x.lemma.as_str()).collect()
+    // (an article says nothing of its own: "a dog" and "dogs" ask the same)
+    q.iter().enumerate().filter(|(i, x)| Some(*i) != h && x.lemma != "do" && !matches!(x.word.as_str(), "a" | "an" | "the") && x.lemma.chars().any(|c| c.is_alphanumeric())).map(|(_, x)| x.lemma.as_str()).collect()
 }
 
 /// does a known sentence answer a question, and how well its structure fits (for choosing among those that do)?
