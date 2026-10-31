@@ -177,7 +177,7 @@ impl Dialog {
         let mut back: HashMap<String, u32> = HashMap::new();
         for (_, _, next) in &turns {
             if let Some(n) = next {
-                let a = tidy(&turns[*n].1);
+                let a = tidy(turns[*n].1.trim()).trim().to_string();
                 if a.ends_with('?') && a.split_whitespace().count() <= 4 {
                     *back.entry(a).or_default() += 1;
                 }

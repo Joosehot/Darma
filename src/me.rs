@@ -188,6 +188,16 @@ impl<'a> Me<'a> {
         self.core.tell(&new);
     }
 
+    /// what it knows of itself to answer from: what it was born with and was told, and what it sees itself doing; not
+    /// its notes of what happened (they quote what others said)
+    pub fn facts(&self) -> Vec<String> {
+        let mut v = self.known.clone();
+        if let Some(d) = self.happened.get("doing") {
+            v.push(d.join(" "));
+        }
+        v
+    }
+
     pub fn all(&self) -> Vec<String> {
         let mut v = self.known.clone();
         let mut h: Vec<_> = self.happened.iter().collect();
@@ -224,6 +234,15 @@ impl<'a> Me<'a> {
             said = said.replace(plain.as_str(), written);
         }
         Some(said)
+    }
+
+    /// a sentence written as the words of its birth are written ("rq sm" -> "RQ-SM")
+    pub fn spell(&self, s: &str) -> String {
+        let mut s = s.to_string();
+        for (plain, written) in &self.spelled {
+            s = s.replace(plain.as_str(), written);
+        }
+        s
     }
 
     /// a yes/no question about itself: Some(true/false) when it knows these words of itself, None when it does not

@@ -199,6 +199,47 @@ impl Hear {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Struck {
+    attach: Vec<HVec>,
+    small: Vec<String>,
+}
+
+impl Hear {
+    /// hearing struck from UD's train split on the classes the grammar reads (`strikes` passes), saved; or loaded
+    pub fn strike_or_load(seed: u64, strikes: usize, sx: &Syntax) -> Hear {
+        let path = format!("data/strike/hear_D{HEAR_D}_k{strikes}_s{seed}.json");
+        if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Struck>(&s).ok()) {
+            return Hear { seed, atoms: Default::default(), attach: s.attach, small: s.small.into_iter().collect() };
+        }
+        let train = load("data/raw/ud/en_ewt-ud-train.conllu");
+        let tr: Vec<Vec<Tok>> = train.iter().map(|s| s.toks.clone()).collect();
+        let classes: Vec<Vec<String>> = par_map(&tr, |s| sx.read_classes(s).into_iter().map(|k| sx.pos_names[k].clone()).collect());
+        let h = Hear::strike(&train, &classes, seed, strikes, small_words(&tr));
+        let mut small: Vec<String> = h.small.iter().cloned().collect();
+        small.sort();
+        let _ = std::fs::create_dir_all("data/strike");
+        let _ = std::fs::write(&path, serde_json::to_string(&Struck { attach: h.attach.clone(), small }).unwrap());
+        h
+    }
+
+    /// the core word of each word of a sentence (1-based; 0: the sentence's core), its classes as read
+    pub fn heads(&self, words: &[String], classes: &[String]) -> Vec<usize> {
+        self.tree(words, classes)
+    }
+}
+
+/// the 300 commonest words of the sentences: their own place matters ("not", "to", "of")
+pub fn small_words(tr: &[Vec<Tok>]) -> HashSet<String> {
+    let mut c: HashMap<String, u32> = HashMap::new();
+    for t in tr.iter().flatten() {
+        *c.entry(t.word.clone()).or_default() += 1;
+    }
+    let mut v: Vec<(String, u32)> = c.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.into_iter().take(300).map(|x| x.0).collect()
+}
+
 /// Eisner's first-order projective decoding: the tree with the highest sum of s[head][dependent] (0 = the core)
 pub fn eisner(s: &[Vec<f32>]) -> Vec<usize> {
     let n = s.len();
@@ -288,14 +329,7 @@ pub fn eval(seed: u64, strikes: usize) {
         println!("DIAGNOSIS: people's classes, not Darma's");
     }
     println!("the grammar {} and read the classes, {:.1} s", if loaded { "loaded" } else { "struck" }, t0.elapsed().as_secs_f64());
-    let mut c: HashMap<String, u32> = HashMap::new();
-    for t in tr.iter().flatten() {
-        *c.entry(t.word.clone()).or_default() += 1;
-    }
-    let mut v: Vec<(String, u32)> = c.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let small: HashSet<String> = v.into_iter().take(300).map(|x| x.0).collect();
-    let h = Hear::strike(&train, &ctr, seed, strikes, small);
+    let h = Hear::strike(&train, &ctr, seed, strikes, small_words(&tr));
     // the yardstick: each class's commonest (core class, side), counted on people's marks
     let mut counts: HashMap<String, HashMap<(String, bool), u32>> = HashMap::new();
     for s in &train {

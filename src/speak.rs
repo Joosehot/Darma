@@ -273,6 +273,42 @@ impl Speak {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Struck {
+    places: Vec<HVec>,
+    changes: Vec<String>,
+    bends: Vec<HVec>,
+    by_pos: HashMap<String, Vec<usize>>,
+}
+
+impl Speak {
+    /// speech struck from UD's train split, saved; or loaded
+    pub fn strike_or_load(seed: u64, strikes: usize) -> (Speak, std::collections::HashSet<String>) {
+        let train = load("data/raw/ud/en_ewt-ud-train.conllu");
+        let small = small_lemmas(&train);
+        let path = format!("data/strike/speak_D{SPEAK_D}_k{strikes}_s{seed}.json");
+        if let Some(s) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Struck>(&s).ok()) {
+            return (Speak { seed, atoms: HashMap::new(), places: s.places, changes: s.changes, bends: s.bends, by_pos: s.by_pos }, small);
+        }
+        let sm = small.clone();
+        let sp = Speak::strike(&train, seed, strikes, &move |w: &str| sm.contains(w));
+        let _ = std::fs::create_dir_all("data/strike");
+        let _ = std::fs::write(&path, serde_json::to_string(&Struck { places: sp.places.clone(), changes: sp.changes.clone(), bends: sp.bends.clone(), by_pos: sp.by_pos.clone() }).unwrap());
+        (sp, small)
+    }
+}
+
+/// the 200 commonest base forms: their own place matters ("not", "also", "very")
+pub fn small_lemmas(train: &[Vec<Word>]) -> std::collections::HashSet<String> {
+    let mut c: HashMap<String, u32> = HashMap::new();
+    for w in train.iter().flatten() {
+        *c.entry(w.lemma.clone()).or_default() += 1;
+    }
+    let mut v: Vec<(String, u32)> = c.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.into_iter().take(200).map(|x| x.0).collect()
+}
+
 /// `darma speak-eval [strikes]`: speech taught by UD's train split, measured on its test split: the sentence put in
 /// order from its tree (whole sentences right, word pairs in the right order), and words bent from base form and
 /// features; against yardsticks: each role's commonest side and rank, and the base form said as it is

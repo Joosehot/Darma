@@ -172,6 +172,8 @@ pub struct Talk<'a> {
     pub me: crate::me::Me<'a>,
     /// its understanding of what a line does and feels, and its grammar (for sentences of its own)
     own: Option<(crate::understand::Understanding<'a>, crate::compose::Composer)>,
+    /// conscious parallel thinking: hearing, and thoughts on what is heard and known
+    cpt: Option<crate::cpt::Cpt>,
 }
 
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
@@ -209,7 +211,9 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")) };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), cpt: crate::cpt::Cpt::load(1) };
+        // what it is doing, as it is: talking with whoever speaks to it (seen of itself, not told)
+        talk.me.happened("doing", "i am talking with you");
         if seed_ud {
             // a memory to begin with: every UD training sentence (people's English, news and the web)
             for s in &data().tagged {
@@ -255,7 +259,7 @@ impl<'a> Talk<'a> {
         u.dedup();
         for x in u {
             let r = self.rarity(x);
-            if r < std::f32::consts::LN_2 {
+            if r < std::f32::consts::LN_2 || self.cpt.as_ref().is_some_and(|c| c.small.contains(x)) {
                 continue;
             }
             for &i in self.by_word.get(x.as_str()).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -328,9 +332,16 @@ impl<'a> Talk<'a> {
         let world = &self.core;
         let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
         let test = |ans: &str| me.names_a_stranger(ans, &known).or_else(|| me.contradicts(&words_of(ans)));
-        if let Some((u, c)) = self.own.as_ref() {
-            if let Some((ans, why)) = c.feeling_reply(u, w, &test) {
-                return Some(Reply { said: ans, why, kind: "feel", recall: String::new(), ask: String::new() });
+        // (feelings are not answered from the reading of emotions: it reads them too poorly, "I am Joose" as sadness)
+        // a question of Darma that asks of a doing ("do you like music", "where do you live") is no formula: people's
+        // answer would speak for Darma
+        let question = self.dialog.as_ref().is_some_and(|d| w.first().is_some_and(|f| d.opens_question(f)));
+        if crate::me::about_me(w) && question {
+            if let Some(c) = self.cpt.as_ref() {
+                let n = c.hear_as(&crate::me::to_me(w), "?");
+                if n.iter().any(|x| x.pos == "VERB" && !matches!(x.lemma.as_str(), "be" | "do" | "go")) {
+                    return None;
+                }
             }
         }
         let last = self.last.clone();
@@ -344,7 +355,7 @@ impl<'a> Talk<'a> {
         // "I was calling to change our meeting" after it)
         let end = ans.trim().find(['.', '!', '?']).map_or(ans.trim().len(), |k| k + 1);
         let ans = ans.trim()[..end].to_string();
-        let formula = words_of(&ans).len() <= SOCIAL_WORDS;
+        let formula = words_of(&ans).len() <= SOCIAL_WORDS && !words_of(&ans).is_empty();
         (short && formula && s >= SOCIAL_AT).then(|| Reply { said: ans, why: format!("a social formula; people answered this to \"{matched}\" ({s:.2})"), kind: "talk", recall: String::new(), ask: String::new() })
     }
 
@@ -404,25 +415,14 @@ impl<'a> Talk<'a> {
                 let world = &self.core;
                 let known = |x: &str| world.reg.contains_key(x) || me.core.reg.contains_key(x);
                 let test = |a: &str| me.names_a_stranger(a, &known).or_else(|| me.contradicts(&words_of(a)));
-                // a feeling first (sadness, anger, fear...): answered as people answer that feeling
-                if let Some((a, why)) = c.feeling_reply(u, w, &test) {
-                    return Reply { said: a, why: format!("{why}; I keep of you: {}", s.join(" ")), kind: "feel", recall: String::new(), ask: String::new() };
-                }
                 if let Some((q, why)) = c.own_question(u, w, &test) {
                     return Reply { said: q, why: format!("{why}; I keep of you: {}", s.join(" ")), kind: "own", recall: String::new(), ask: String::new() };
                 }
             }
-            match self.talk(w) {
-                Some(mut t) => {
-                    t.why = format!("{}; I keep of you: {}", t.why, s.join(" "));
-                    t
-                }
-                None => {
-                    let mut rep = r("I'll remember that about you.".into(), s.join(" "), "told");
-                    rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
-                    rep
-                }
-            }
+            // what the speaker says of themselves is theirs: no one else's words answer it
+            let mut rep = r("I'll remember that about you.".into(), s.join(" "), "told");
+            rep.recall = self.recall(&s, Some(i)).unwrap_or_default();
+            rep
         }
     }
 
@@ -456,13 +456,7 @@ impl<'a> Talk<'a> {
             // said of Darma itself ("you are curious"): kept in its self; and it answers as people did, if that fits
             let s = crate::me::to_me(w);
             self.me.tell(&s);
-            match self.talk(w) {
-                Some(mut t) => {
-                    t.why = format!("{}; I keep of myself: {}", t.why, s.join(" "));
-                    t
-                }
-                None => r("I'll remember that about myself.".into(), s.join(" "), "told"),
-            }
+            r("I'll remember that about myself.".into(), s.join(" "), "told")
         } else {
             // spoken to Darma, but not saying what it is ("how you doing", "thank you"): talk
             self.talk(w).unwrap_or_else(|| r(TEACH_ME.into(), "nothing people said to this is like it, and it does not say what I am".into(), "unknown"))
@@ -477,6 +471,67 @@ impl<'a> Talk<'a> {
     /// is this a question people answer with yes or no (learned from what they answered)?
     fn yes_no(&self, w: &[String]) -> bool {
         w.first().map_or(true, |f| self.dialog.as_ref().map_or(true, |d| d.asks_yes_no(f)))
+    }
+
+    /// the known sentences a question may be answered from, in the question's own words (turned to Darma's side
+    /// when asked of it): of itself, or what it was told (of the speaker, of the world)
+    fn known_for(&self, w: &[String]) -> (Vec<String>, Vec<String>, &'static str) {
+        if crate::me::about_me(w) {
+            (crate::me::to_me(w), self.me.facts(), "me")
+        } else if crate::me::about_speaker(w) {
+            (crate::me::to_you(w), self.said.iter().map(|s| s.join(" ")).collect(), "you")
+        } else {
+            (w.to_vec(), self.said.iter().map(|s| s.join(" ")).collect(), "world")
+        }
+    }
+
+    /// conscious parallel thinking, v0: the question heard into a structure, every known sentence heard the same
+    /// way, and thoughts side by side: recall (the known sentences that fill the question's structure), nearest
+    /// (what is known of the same one in the same way), ask back (when it knows nothing of it). The workspace takes the
+    /// strongest; nothing when no thought has anything (the older ways answer then)
+    fn think(&self, line: &str, w: &[String]) -> Option<Reply> {
+        let cpt = self.cpt.as_ref()?;
+        if !self.asks(line, w) {
+            return None;
+        }
+        let (q, known, whose) = self.known_for(w);
+        let qn = cpt.hear_as(&q, "?");
+        let heard = crate::cpt::Cpt::show(&qn);
+        let hole = crate::cpt::hole(&qn);
+        let facts: Vec<(String, Vec<crate::cpt::Node>)> = known.iter().map(|k| (k.clone(), cpt.hear(&words_of(k)))).collect();
+        let say = |f: &[crate::cpt::Node]| self.me.spell(&crate::cpt::say(f));
+        let r = |said: String, why: String| Some(Reply { said, why, kind: "cpt", recall: String::new(), ask: String::new() });
+        // recall: the known sentences that answer it, the best fitting first (at most two)
+        // of those that answer: the best fitting, then the one saying least beyond the question (the most to the point)
+        let mut full: Vec<(f32, &(String, Vec<crate::cpt::Node>))> = facts.iter().filter_map(|x| crate::cpt::fit(&qn, &x.1).map(|s| (s, x))).collect();
+        full.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1 .1.len().cmp(&b.1 .1.len())));
+        full.dedup_by(|a, b| a.1 .0 == b.1 .0);
+        // a second answer only if it fits as well as the first
+        if full.len() > 1 && (full[1].0 < full[0].0 || !crate::cpt::names_a_thing(&full[0].1 .1) || !crate::cpt::names_a_thing(&full[1].1 .1)) {
+            full.truncate(1);
+        }
+        if !full.is_empty() {
+            let said: Vec<String> = full.iter().take(2).map(|x| say(&x.1 .1)).collect();
+            let yes = if hole.is_none() { "Yes. " } else { "" };
+            return r(format!("{yes}{}", said.join(" ")), format!("heard: {heard}; recall: {}", full.iter().take(2).map(|x| format!("\"{}\" (fits {:.2})", x.1 .0, x.0)).collect::<Vec<_>>().join(", ")));
+        }
+        // nearest: what is known of the same doer in the same way
+        let mut near: Vec<(f32, &(String, Vec<crate::cpt::Node>))> = facts.iter().filter_map(|x| crate::cpt::near(&qn, &x.1, &cpt.small).map(|s| (s, x))).collect();
+        near.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1 .1.len().cmp(&b.1 .1.len())));
+        near.dedup_by(|a, b| a.1 .0 == b.1 .0);
+        if !near.is_empty() {
+            let said: Vec<String> = near.iter().take(2).map(|x| say(&x.1 .1)).collect();
+            let dunno = if whose == "me" { "I don't know that about myself." } else if whose == "you" { "I don't know that about you." } else { "I don't know." };
+            return r(format!("{dunno} {}", said.join(" ")), format!("heard: {heard}; nothing I know answers it; nearest: what I know of {} in the same way", crate::cpt::doer(&qn).unwrap_or_default()));
+        }
+        // ask back: when it knows nothing of what was asked, it asks as people ask when they need more
+        if whose != "me" {
+            let back = self.dialog.as_ref().and_then(|d| d.ask_back.iter().find(|x| x.to_lowercase().contains("you")).or(d.ask_back.first()).cloned());
+            if let Some(b) = back {
+                return r(format!("I don't know. {b}"), format!("heard: {heard}; I know nothing of it, so I ask as people ask when they need more"));
+            }
+        }
+        None
     }
 
     fn line_inner(&mut self, line: &str) -> Reply {
@@ -497,6 +552,45 @@ impl<'a> Talk<'a> {
                 Some("no") => return r("Okay.", format!("not: {}", q.join(" ")), "told"),
                 _ => {}
             }
+        }
+        // a greeting at the start of a longer line ("hi I am Joose"): greeted back, the rest heard on its own; a name
+        // the rest gives is said with the greeting
+        if w.len() > 2 {
+            for n in 1..=2 {
+                if crate::me::about_me(&w[..n]) || crate::me::about_speaker(&w[..n]) || w[..n].iter().any(|x| crate::cpt::WH.contains(&x.as_str()) || self.copulas.contains(x)) {
+                    break;
+                }
+                // a greeting: people's very words ("Hi.") answered as a formula
+                let part = w[..n].join(" ");
+                if let Some(g) = self.talk(&w[..n]).filter(|g| g.kind == "talk" && g.why.to_lowercase().contains(&format!("\"{part}"))) {
+                    let rest = w[n..].join(" ");
+                    let mut rep = self.line_inner(&rest);
+                    let name = crate::me::about_speaker(&w[n..]).then_some(()).and(self.cpt.as_ref()).and_then(|c| {
+                        let h = c.hear(&crate::me::to_you(&w[n..]));
+                        let you = h.iter().any(|x| x.lemma == "you" || x.lemma == "your");
+                        let be = h.iter().any(|x| x.lemma == "be");
+                        h.iter().rev().find(|x| you && be && !matches!(x.pos.as_str(), "DET" | "ADP" | "AUX" | "CCONJ" | "SCONJ" | "PART" | "PUNCT" | "PRON" | "ADJ" | "VERB") && !c.small.contains(&x.word)).map(|x| {
+                            let mut ch = x.word.chars();
+                            ch.next().map(|f| f.to_uppercase().collect::<String>() + ch.as_str()).unwrap_or_default()
+                        })
+                    });
+                    let gs = g.said.trim();
+                    let (body, mark) = match gs.char_indices().last() {
+                        Some((i, c)) if ".!?".contains(c) => (&gs[..i], &gs[i..]),
+                        _ => (gs, "."),
+                    };
+                    let greet = match name {
+                        Some(nm) => format!("{body}, {nm}{mark}"),
+                        None => format!("{body}{mark}"),
+                    };
+                    rep.said = format!("{greet} {}", rep.said);
+                    rep.why = format!("{}; then: {}", g.why, rep.why);
+                    return rep;
+                }
+            }
+        }
+        if let Some(rep) = self.think(line, &w) {
+            return rep;
         }
         if w.is_empty() {
             r("", String::new(), "none")
