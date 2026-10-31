@@ -88,6 +88,12 @@ impl Will {
         self.save();
     }
 
+    /// a stance set by what it was born with (its base morals)
+    pub fn set(&mut self, thing: &str, kind: &str) {
+        self.stances.insert(thing.to_string(), Stance { kind: kind.to_string(), weight: -1.0 });
+        self.save();
+    }
+
     /// its stance on a thing, weighed now from its reasons: (the stance, its reasons as sentences, what it was
     /// before if it changed)
     /// `known`: how much it read of the thing, if that is enough to know it (the most read tenth)

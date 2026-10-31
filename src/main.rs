@@ -22,6 +22,7 @@ mod cpt;
 mod wiki;
 mod fast;
 mod will;
+mod moral;
 
 use clap::{Parser, Subcommand};
 

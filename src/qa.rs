@@ -576,6 +576,13 @@ impl<'a> Talk<'a> {
             let article = matches!(first.as_str(), "a" | "an" | "the");
             if !article && (name || said_as.chars().next().is_some_and(|c| c.is_uppercase())) { r } else { r.get(..1).map(|f| f.to_lowercase() + &r[1..]).unwrap_or(r) }
         });
+        // what its base morals forbid, it does not like
+        let full_lead = self.wiki.as_ref().and_then(|wk| wk.lead(&thing));
+        if let Some((p, word)) = crate::moral::judge(&thing, full_lead.as_deref()) {
+            self.will.set(&thing, if p.forbids { "not" } else { "like" });
+            let s = if p.forbids { format!("I don't like {said_as}.") } else { format!("I like {said_as}.") };
+            return Some(Reply { said: format!("{s} {} says: \"{}\"", p.reference, p.verse), why: format!("my base morals: {} speaks of it, through \"{word}\" in what I read", p.reference), kind: "will", recall: String::new(), ask: String::new() });
+        }
         let known = self.wiki.as_ref().map(|wk| (wk.depth(&thing), wk.known_at())).filter(|(d, at)| d >= at).map(|x| x.0);
         let (s, reasons, before) = self.will.choose(&thing, read.as_deref(), known);
         let mut said = crate::will::say(&said_as, &s, &reasons, before.as_deref());
@@ -594,10 +601,12 @@ impl<'a> Talk<'a> {
         // the claim: what comes after "think" (and "that")
         let k = w.iter().position(|x| x == "think").map_or(0, |k| k + 1);
         let claim: Vec<String> = w[k..].iter().skip_while(|x| *x == "that").cloned().collect();
-        let things = self.things_said(&claim);
-        // the thing: the first one said, or the word before its "is" ("smoking is bad", heard as a doing)
-        let before_be = claim.iter().position(|x| self.copulas.contains(x)).filter(|&b| b > 0).map(|b| claim[b - 1].clone()).filter(|x| !cpt.small.contains(x));
-        let Some((mut thing, mut said_as)) = claim.iter().find_map(|x| things.iter().find(|t| t.1 == *x).cloned()).or(before_be.map(|x| (cpt.lemma_of(&x, "NOUN"), x))) else {
+        // the thing: the first one said that is not the worth it is given ("is slavery good"), or else the first word
+        // of the claim that says anything ("is lying wrong": lying heard as a doing)
+        let worthy = |x: &str| crate::moral::BAD.contains(&x) || crate::moral::GOOD.contains(&x);
+        let heard = cpt.hear(&claim);
+        let first_word = heard.iter().find(|x| !worthy(&x.word) && !self.copulas.contains(&x.word) && !matches!(x.pos.as_str(), "AUX" | "DET" | "PRON" | "ADP" | "CCONJ" | "SCONJ" | "PART" | "PUNCT") && !matches!(x.word.as_str(), "do" | "you" | "i" | "that" | "it")).map(|x| x.word.clone());
+        let Some((mut thing, mut said_as)) = first_word.map(|x| (cpt.lemma_of(&x, "NOUN"), x)) else {
             return r("I don't know what I think about that yet.".into(), "I could not tell what it is about".into());
         };
         // a claim of worth (wrong, good, harmful ...: English words set by hand) is one people stand on; another claim
@@ -615,6 +624,18 @@ impl<'a> Talk<'a> {
                 }
             }
         }
+        // a claim of worth is judged by its base morals first (what it was born with), through what it read of the thing
+        let lead = wk.lead(&thing);
+        let pred = claim.iter().find(|x| crate::moral::BAD.contains(&x.as_str()) || crate::moral::GOOD.contains(&x.as_str())).cloned();
+        if let Some(pred) = pred.as_ref() {
+            if let Some((p, word)) = crate::moral::judge(&thing, lead.as_deref()) {
+                let bad = crate::moral::BAD.contains(&pred.as_str());
+                let yes = p.forbids == bad;
+                let read = lead.as_deref().map(|l| format!(" I read that {}.", lowered(l).trim_end_matches('.'))).unwrap_or_default();
+                let said = if yes { format!("Yes, I think {said_as} is {pred}. {} says: \"{}\"{read}", p.reference, p.verse) } else { format!("No, I don't think {said_as} is {pred}. {} says: \"{}\"{read}", p.reference, p.verse) };
+                return r(said, format!("my base morals: {} speaks of it, through \"{word}\" in what I read of {thing}", p.reference));
+            }
+        }
         // what it read says so: the claim as a question, answered from the thing's article
         let mut q = claim.clone();
         if let Some(b) = q.iter().position(|x| self.copulas.contains(x)) {
@@ -626,10 +647,9 @@ impl<'a> Talk<'a> {
             return r(format!("I think so. I read that {}", f.text), format!("what I read of {thing} says so"));
         }
         let (con, pro) = if of_worth { wk.sides(&thing) } else { (Vec::new(), Vec::new()) };
-        let lead = wk.lead(&thing);
-        // people disagree when it read at least two on each side; else it says the side it read
+        let base = if of_worth { "My base morals don't speak of it directly. " } else { "" };
         if con.len() >= 2 && pro.len() >= 2 {
-            let mut said = format!("I know that people disagree about {said_as}.");
+            let mut said = format!("{base}I know that people disagree about {said_as}.");
             if let Some(c) = con.first() {
                 said.push_str(&format!(" Some are against it: \"{c}\""));
             }
@@ -641,10 +661,10 @@ impl<'a> Talk<'a> {
         }
         if let Some(c) = con.first().or(pro.first()) {
             let side = if con.is_empty() { "for" } else { "against" };
-            return r(format!("I read that some people are {side} {said_as}: \"{c}\" My own reasons don't decide it, so I don't take a side."), format!("I read only one side of {thing}"));
+            return r(format!("{base}I read that some people are {side} {said_as}: \"{c}\" My own reasons don't decide it, so I don't take a side."), format!("I read only one side of {thing}"));
         }
         match lead {
-            Some(l) => r(format!("I don't know. I read that {}, but nothing I know says whether that is so.", l.trim_end_matches('.')), format!("what I read of {thing} does not say")),
+            Some(l) => r(format!("{base}I don't know. I read that {}, but nothing I know says whether that is so.", l.trim_end_matches('.')), format!("what I read of {thing} does not say")),
             None => r("I don't know what I think about that yet.".into(), format!("I know nothing of {thing}")),
         }
     }
@@ -705,6 +725,10 @@ impl<'a> Talk<'a> {
             let said: Vec<String> = near.iter().take(2).map(|x| say(&x.1 .1)).collect();
             let dunno = if whose == "me" { "I don't know that about myself." } else if whose == "you" { "I don't know that about you." } else { "I don't know." };
             return r(format!("{dunno} {}", said.join(" ")), format!("heard: {heard}; nothing I know answers it; nearest: what I know of {} in the same way", crate::cpt::doer(&qn).unwrap_or_default()));
+        }
+        // a claim of worth asked of the world ("is slavery wrong?"): judged as "do you think" is
+        if whose == "world" && hole.is_none() && w.iter().any(|x| crate::moral::BAD.contains(&x.as_str()) || crate::moral::GOOD.contains(&x.as_str())) {
+            return Some(self.claim(w));
         }
         // what it read: of the world, Wikipedia's sentences that answer it
         if whose == "world" {
@@ -1069,4 +1093,12 @@ pub fn ratings() {
         println!("  {line:<40} -> {said}   [{}]", name(kind));
         let _ = mark;
     }
+}
+
+/// a sentence read, said inside another: its first letter small unless it begins a name
+fn lowered(s: &str) -> String {
+    let first = s.split(' ').next().unwrap_or("");
+    let article = matches!(first.to_lowercase().as_str(), "a" | "an" | "the");
+    let second_cap = s.split(' ').nth(1).and_then(|x| x.chars().next()).is_some_and(|c| c.is_uppercase());
+    if article || !second_cap { s.get(..1).map(|f| f.to_lowercase() + &s[1..]).unwrap_or_default() } else { s.to_string() }
 }
