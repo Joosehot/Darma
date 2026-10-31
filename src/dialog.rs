@@ -506,6 +506,12 @@ impl Dialog {
 
     /// does a turn opening with this word ask, as people's turns do (at least 20 of them, three in four ending in
     /// "?": "Hello?" on the phone is a question often, but not that often)?
+    /// do people open a conversation with these words (the first sentence of some dialogue, as a greeting: "hi",
+    /// "hello", "good morning"; not "so")?
+    pub fn opens_dialogue(&self, w: &[String]) -> bool {
+        self.units.iter().zip(&self.unit_prev).any(|(u, p)| p.is_none() && u.0 == w)
+    }
+
     pub fn opens_question(&self, first: &str) -> bool {
         self.openers.get(first).is_some_and(|(q, n)| *n >= 20 && *q * 4 >= *n * 3)
     }

@@ -595,17 +595,74 @@ impl<'a> Talk<'a> {
     /// what it thinks of a claim ("do you think abortions are wrong"), from what it knows: what it read says it is so
     /// (it thinks so); people stand on both sides (it says so, and that its own reasons do not decide it); or it does
     /// not know. Its own drives weigh learning and talking, not right and wrong, so it takes no side of its own
+    /// what the speaker told of a thing: the sentences it kept that hold it ("abortion means killing the baby")
+    fn told_of(&self, thing: &str) -> Vec<String> {
+        let Some(c) = self.cpt.as_ref() else { return Vec::new() };
+        if c.small.contains(thing) {
+            return Vec::new();
+        }
+        self.said.iter().filter(|s| s.iter().any(|x| x == thing || c.lemma_of(x, "NOUN") == thing)).map(|s| s.join(" ")).collect()
+    }
+
+    /// its base morals on a thing: through what the speaker told of it first (their words are about this very
+    /// thing), then through what it read; with where it found it, as it will say it
+    fn judge(&self, thing: &str, lead: Option<&str>) -> Option<(&'static crate::moral::Principle, String, String)> {
+        // the thing's own name first ("killing" names the deed itself)
+        if let Some((p, w)) = crate::moral::judge(thing, None) {
+            return Some((p, w, String::new()));
+        }
+        for s in self.told_of(thing) {
+            if let Some((p, w)) = crate::moral::judge("", Some(&s)) {
+                return Some((p, w, format!(" You told me: \"{s}\".")));
+            }
+        }
+        crate::moral::judge(thing, lead).map(|(p, w)| (p, w, lead.map(|l| format!(" I read that {}.", lowered(l).trim_end_matches('.'))).unwrap_or_default()))
+    }
+
+    /// "should I ...": the deed asked of judged by its base morals, through the deed's own words and what the speaker
+    /// told of the things in it ("should I have an abortion": you told me abortion means killing)
+    fn should(&self, w: &[String]) -> Option<Reply> {
+        let m = w.iter().position(|x| matches!(x.as_str(), "should" | "shall" | "ought"))?;
+        let cpt = self.cpt.as_ref()?;
+        // the one asking and the deed after it ("should i kill a baby": i, kill a baby)
+        let (who, deed): (Option<&String>, Vec<String>) = if m + 1 < w.len() && matches!(w[m + 1].as_str(), "i" | "we" | "you" | "he" | "she" | "they" | "people") { (Some(&w[m + 1]), w[m + 2..].to_vec()) } else if m > 0 { (Some(&w[m - 1]), w[m + 1..].to_vec()) } else { (None, w[m + 1..].to_vec()) };
+        let deed: Vec<String> = deed.into_iter().filter(|x| x != "to").map(|x| match x.as_str() { "my" => "your".into(), "me" => "you".into(), _ => x }).collect();
+        if deed.is_empty() {
+            return None;
+        }
+        let whom = match who.map(|x| x.as_str()) { Some("i") => "you", Some("you") => "I", Some(x) => x, None => "one" };
+        let text = deed.join(" ");
+        let mut found = crate::moral::judge("", Some(&text)).map(|(p, x)| (p, x, String::new()));
+        if found.is_none() {
+            for x in cpt.hear(&deed).iter().filter(|x| matches!(x.pos.as_str(), "NOUN" | "PROPN" | "VERB")) {
+                if let Some(j) = self.judge(&cpt.lemma_of(&x.word, "NOUN"), None) {
+                    found = Some(j);
+                    break;
+                }
+            }
+        }
+        let r = |said: String, why: String| Some(Reply { said, why, kind: "will", recall: String::new(), ask: String::new() });
+        match found {
+            Some((p, word, source)) if p.forbids => r(format!("No, I don't think {whom} should {text}. {} says: \"{}\"{source}", p.reference, p.verse), format!("my base morals: {} speaks of it, through \"{word}\"", p.reference)),
+            Some((p, word, source)) => r(format!("Yes, I think {whom} should {text}. {} says: \"{}\"{source}", p.reference, p.verse), format!("my base morals: {} speaks of it, through \"{word}\"", p.reference)),
+            None => r(format!("My base morals don't speak of it directly, so I can't tell whether {whom} should {text}."), "no commandment I was born with names that deed".into()),
+        }
+    }
+
     fn claim(&self, w: &[String]) -> Reply {
         let r = |said: String, why: String| Reply { said, why, kind: "will", recall: String::new(), ask: String::new() };
         let Some(cpt) = self.cpt.as_ref() else { return r("I don't know what I think about that yet.".into(), String::new()) };
         // the claim: what comes after "think" (and "that")
         let k = w.iter().position(|x| x == "think").map_or(0, |k| k + 1);
         let claim: Vec<String> = w[k..].iter().skip_while(|x| *x == "that").cloned().collect();
+        if let Some(rep) = self.should(&claim) {
+            return rep;
+        }
         // the thing: the first one said that is not the worth it is given ("is slavery good"), or else the first word
         // of the claim that says anything ("is lying wrong": lying heard as a doing)
         let worthy = |x: &str| crate::moral::BAD.contains(&x) || crate::moral::GOOD.contains(&x);
         let heard = cpt.hear(&claim);
-        let first_word = heard.iter().find(|x| !worthy(&x.word) && !self.copulas.contains(&x.word) && !matches!(x.pos.as_str(), "AUX" | "DET" | "PRON" | "ADP" | "CCONJ" | "SCONJ" | "PART" | "PUNCT") && !matches!(x.word.as_str(), "do" | "you" | "i" | "that" | "it")).map(|x| x.word.clone());
+        let first_word = heard.iter().find(|x| !worthy(&x.word) && !self.copulas.contains(&x.word) && !matches!(x.pos.as_str(), "AUX" | "DET" | "PRON" | "ADP" | "CCONJ" | "SCONJ" | "PART" | "PUNCT") && !matches!(x.word.as_str(), "do" | "you" | "i" | "that" | "it" | "yes" | "no" | "so" | "then" | "well" | "but" | "and" | "okay" | "ok" | "right" | "also" | "now")).map(|x| x.word.clone());
         let Some((mut thing, mut said_as)) = first_word.map(|x| (cpt.lemma_of(&x, "NOUN"), x)) else {
             return r("I don't know what I think about that yet.".into(), "I could not tell what it is about".into());
         };
@@ -628,10 +685,10 @@ impl<'a> Talk<'a> {
         let lead = wk.lead(&thing);
         let pred = claim.iter().find(|x| crate::moral::BAD.contains(&x.as_str()) || crate::moral::GOOD.contains(&x.as_str())).cloned();
         if let Some(pred) = pred.as_ref() {
-            if let Some((p, word)) = crate::moral::judge(&thing, lead.as_deref()) {
+            if let Some((p, word, source)) = self.judge(&thing, lead.as_deref()) {
                 let bad = crate::moral::BAD.contains(&pred.as_str());
                 let yes = p.forbids == bad;
-                let read = lead.as_deref().map(|l| format!(" I read that {}.", lowered(l).trim_end_matches('.'))).unwrap_or_default();
+                let read = source;
                 let said = if yes { format!("Yes, I think {said_as} is {pred}. {} says: \"{}\"{read}", p.reference, p.verse) } else { format!("No, I don't think {said_as} is {pred}. {} says: \"{}\"{read}", p.reference, p.verse) };
                 return r(said, format!("my base morals: {} speaks of it, through \"{word}\" in what I read of {thing}", p.reference));
             }
@@ -748,7 +805,20 @@ impl<'a> Talk<'a> {
     }
 
     fn line_inner(&mut self, line: &str) -> Reply {
-        let w = words_of(line);
+        let mut w = words_of(line);
+        // what only carries a question is left out of it: a word that joins it to what was said before ("but",
+        // "so"), and a tag after it ("do you", "don't you", "right") (English, set by hand)
+        if self.asks(line, &w) {
+            while w.len() > 2 && matches!(w[0].as_str(), "but" | "so" | "and" | "well" | "yes" | "no" | "ok" | "okay") {
+                w.remove(0);
+            }
+            let n = w.len();
+            if n > 3 && matches!(w[n - 2].as_str(), "do" | "don" | "does" | "did" | "are" | "aren" | "is" | "isn" | "can" | "have" | "haven") && matches!(w[n - 1].as_str(), "you" | "i" | "it" | "we" | "they" | "t") {
+                w.truncate(n - 2);
+            } else if n > 3 && w[n - 1] == "right" {
+                w.truncate(n - 1);
+            }
+        }
         let hole = w.iter().any(|x| crate::quantum::HOLES.contains(&x.as_str()));
         let r = |said: &str, why: String, kind| Reply { said: said.to_string(), why, kind, recall: String::new(), ask: String::new() };
         // an answer to what Darma asked: "yes" tells it, "no" lets it go (these two words are a rule, not learned)
@@ -775,7 +845,8 @@ impl<'a> Talk<'a> {
                 }
                 // a greeting: people's very words ("Hi.") answered as a formula
                 let part = w[..n].join(" ");
-                if let Some(g) = self.talk(&w[..n]).filter(|g| g.kind == "talk" && g.why.to_lowercase().contains(&format!("\"{part}"))) {
+                let opens = self.dialog.as_ref().is_some_and(|d| d.opens_dialogue(&w[..n]));
+                if let Some(g) = self.talk(&w[..n]).filter(|g| opens && g.kind == "talk" && g.why.to_lowercase().contains(&format!("\"{part}"))) {
                     let rest = w[n..].join(" ");
                     let mut rep = self.line_inner(&rest);
                     let name = crate::me::about_speaker(&w[n..]).then_some(()).and(self.cpt.as_ref()).and_then(|c| {
@@ -804,6 +875,11 @@ impl<'a> Talk<'a> {
         }
         if let Some(rep) = self.stance(line, &w) {
             return rep;
+        }
+        if self.asks(line, &w) && w.first().is_some_and(|x| matches!(x.as_str(), "should" | "shall" | "ought")) {
+            if let Some(rep) = self.should(&w) {
+                return rep;
+            }
         }
         if let Some(rep) = self.think(line, &w) {
             return rep;

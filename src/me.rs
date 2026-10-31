@@ -20,7 +20,7 @@ use crate::quantum::{Core, HOLES};
 use std::collections::HashMap;
 
 /// what is true of Darma by its making, in the words it says them (a hyphen or capitals kept for saying)
-pub const BORN: [&str; 5] = ["i am darma", "my name is darma", "i am a program", "i am a resonant quantum-spirited model", "i am an RQ-SM"];
+pub const BORN: [&str; 7] = ["i am darma", "my name is darma", "i am a program", "i am a resonant quantum-spirited model", "i am an RQ-SM", "i have morals", "my morals come from the bible"];
 const COPULAS: [&str; 7] = ["is", "are", "am", "was", "were", "be", "been"];
 
 fn w(s: &str) -> Vec<String> {
