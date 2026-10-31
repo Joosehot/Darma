@@ -336,7 +336,10 @@ impl<'a> Talk<'a> {
         let last = self.last.clone();
         let d = self.dialog.as_mut()?;
         let short = w.iter().filter(|x| d.knows(x)).count() <= SOCIAL_WORDS;
-        let (ans, matched, s, _) = d.reply_where(w, last.as_deref(), None, &test)?;
+        // a formula is answered as itself, whatever was said before (the conversation must not turn "hello" into
+        // another turn's answer)
+        let _ = last;
+        let (ans, matched, s, _) = d.reply_where(w, None, None, &test)?;
         // only the formula itself: the answer's first sentence, and short ("Great, thanks." not the stranger's
         // "I was calling to change our meeting" after it)
         let end = ans.trim().find(['.', '!', '?']).map_or(ans.trim().len(), |k| k + 1);
