@@ -64,13 +64,13 @@ fn ending(w: &str, n: usize) -> String {
 }
 
 /// the change from a base form to a form: how many letters off its end, and what is put on ("-1+ied")
-fn change(lemma: &str, form: &str) -> String {
+pub fn change(lemma: &str, form: &str) -> String {
     let (a, b): (Vec<char>, Vec<char>) = (lemma.chars().collect(), form.chars().collect());
     let k = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
     format!("-{}+{}", a.len() - k, b[k..].iter().collect::<String>())
 }
 
-fn apply(lemma: &str, ch: &str) -> String {
+pub fn apply(lemma: &str, ch: &str) -> String {
     let (cut, put) = ch[1..].split_once('+').unwrap_or(("0", ""));
     let a: Vec<char> = lemma.chars().collect();
     let n = cut.parse::<usize>().unwrap_or(0).min(a.len());

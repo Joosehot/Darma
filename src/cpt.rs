@@ -30,6 +30,7 @@ pub struct Cpt {
     #[allow(dead_code)]
     pub speak: Speak,
     pub lemma: HashMap<(String, String), String>,
+    unbend: HashMap<(String, String), String>,
     pub small: HashSet<String>,
     cache: std::sync::Mutex<HashMap<String, Vec<Node>>>,
 }
@@ -49,7 +50,46 @@ fn ud_lemmas() -> HashMap<(String, String), String> {
     c.into_iter().filter_map(|(w, m)| m.into_iter().max_by_key(|x| (x.1, x.0.clone())).map(|x| (w, x.0))).collect()
 }
 
+/// base forms of words UD never had, learned backwards from the words it had: for each class and ending of a written
+/// word, the change people's base forms most often make of it ("mammals" ends as "animals" did: "-1+")
+fn ud_unbends() -> HashMap<(String, String), String> {
+    let mut c: HashMap<(String, String), HashMap<String, u32>> = HashMap::new();
+    for name in ["data/raw/ud/en_ewt-ud-train.conllu"] {
+        for line in std::fs::read_to_string(name).unwrap_or_default().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 4 && !f[0].contains('-') && !f[0].contains('.') && f[1].chars().all(|c| c.is_alphabetic()) {
+                let (form, lemma) = (f[1].to_lowercase(), f[2].to_lowercase());
+                let ch = crate::speak::change(&form, &lemma);
+                for n in 1..=3 {
+                    let end: String = form.chars().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect();
+                    *c.entry((f[3].to_string(), format!("{n}:{end}"))).or_default().entry(ch.clone()).or_default() += 1;
+                }
+            }
+        }
+    }
+    // a change is kept for an ending when seen at least three times
+    c.into_iter().filter_map(|(k, m)| m.into_iter().filter(|x| x.1 >= 3).max_by_key(|x| (x.1, x.0.clone())).map(|x| (k, x.0))).collect()
+}
+
 impl Cpt {
+    /// a word's base form as its class: as UD had it, or (a word UD never had) by the change its ending most often
+    /// makes, the longest ending known first
+    pub fn lemma_of(&self, w: &str, pos: &str) -> String {
+        if let Some(l) = self.lemma.get(&(w.to_string(), pos.to_string())) {
+            return l.clone();
+        }
+        let chars: Vec<char> = w.chars().collect();
+        for n in (1..=3).rev() {
+            if chars.len() > n + 1 {
+                let end: String = chars[chars.len() - n..].iter().collect();
+                if let Some(ch) = self.unbend.get(&(pos.to_string(), format!("{n}:{end}"))) {
+                    return crate::speak::apply(w, ch);
+                }
+            }
+        }
+        w.to_string()
+    }
+
     /// the grammar, hearing and speech, struck before (or struck now and saved)
     pub fn load(seed: u64) -> Option<Cpt> {
         let train = crate::syntax::load("data/raw/ud/en_ewt-ud-train.conllu");
@@ -60,7 +100,7 @@ impl Cpt {
         let hear = Hear::strike_or_load(seed, 3, &sx);
         let (speak, _) = Speak::strike_or_load(seed, 3);
         let small = crate::hear::small_words(&train);
-        Some(Cpt { sx, hear, speak, lemma: ud_lemmas(), small, cache: Default::default() })
+        Some(Cpt { sx, hear, speak, lemma: ud_lemmas(), unbend: ud_unbends(), small, cache: Default::default() })
     }
 
     /// a sentence heard: each word's class, role and core word. It is heard as UD's sentences are written: "I" with
@@ -90,7 +130,7 @@ impl Cpt {
         let classes: Vec<String> = tags.iter().map(|&k| self.sx.pos_names[k].clone()).collect();
         let heads = if w.is_empty() { Vec::new() } else { self.hear.heads(&w, &classes) };
         let n = w.len() - 1;
-        let nodes: Vec<Node> = (0..n).map(|i| Node { word: w[i].clone(), lemma: self.lemma.get(&(w[i].clone(), classes[i].clone())).cloned().unwrap_or_else(|| w[i].clone()), pos: classes[i].clone(), rel: self.sx.rel_names[roles[i]].clone(), head: if heads[i] > n { 0 } else { heads[i] } }).collect();
+        let nodes: Vec<Node> = (0..n).map(|i| Node { word: w[i].clone(), lemma: self.lemma_of(&w[i], &classes[i]), pos: classes[i].clone(), rel: self.sx.rel_names[roles[i]].clone(), head: if heads[i] > n { 0 } else { heads[i] } }).collect();
         nodes
     }
 

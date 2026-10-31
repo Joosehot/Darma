@@ -329,7 +329,7 @@ impl Reader {
         (0..sents.len()).map(|k| {
             let w = &sents[k];
             let n = w.len();
-            (0..n).map(|i| Node { word: w[i].clone(), lemma: cpt.lemma.get(&(w[i].clone(), classes[k][i].clone())).cloned().unwrap_or_else(|| w[i].clone()), pos: classes[k][i].clone(), rel: sx.rel_names[roles[k][i]].clone(), head: if heads[k][i] > n { 0 } else { heads[k][i] } }).collect()
+            (0..n).map(|i| Node { word: w[i].clone(), lemma: cpt.lemma_of(&w[i], &classes[k][i]), pos: classes[k][i].clone(), rel: sx.rel_names[roles[k][i]].clone(), head: if heads[k][i] > n { 0 } else { heads[k][i] } }).collect()
         }).collect()
     }
 }
