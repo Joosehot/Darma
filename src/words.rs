@@ -194,6 +194,11 @@ impl Meaning for Words {
 pub struct Read {
     seed: u64,
     defs: HashMap<String, Vec<String>>,
+    /// each word's definition as a noun (the dictionary marks each entry's word class: "rose, n."), as written
+    nouns: HashMap<String, Vec<String>>,
+    /// every sense of each word as a noun, in the dictionary's order (most used first): each sense's definition as
+    /// written (the dictionary's numbered entries: "plant, n. 1. buildings for carrying on industrial labor 2. ...")
+    senses: HashMap<String, Vec<Vec<String>>>,
     lemma: HashMap<String, String>,
     idf: HashMap<String, f32>,
     cache: RefCell<HashMap<String, Option<HVec>>>,
@@ -202,6 +207,50 @@ pub struct Read {
 /// how much a word's definition weighs in its meaning (its own atom 1), and the definitions' definitions (set by hand)
 pub const SAYS: f32 = 1.0;
 pub const SAYS2: f32 = 0.5;
+
+/// the dictionary's noun entries: each word's senses in order (index.noun) and each sense's definition (data.noun,
+/// the text after "|", up to its first ";", without its examples)
+pub fn noun_senses() -> HashMap<String, Vec<Vec<String>>> {
+    let dir = ["data/wordnet/dict", "../Primogenitus/motor/data/wordnet/dict"].into_iter().find(|p| std::path::Path::new(p).exists());
+    let Some(dir) = dir else { return HashMap::new() };
+    let mut gloss: HashMap<&str, Vec<String>> = HashMap::new();
+    let data = std::fs::read_to_string(format!("{dir}/data.noun")).unwrap_or_default();
+    for line in data.lines().filter(|l| !l.starts_with(' ')) {
+        let (Some(off), Some(g)) = (line.split(' ').next(), line.split(" | ").nth(1)) else { continue };
+        let g = g.split(';').next().unwrap_or("").replace('"', "");
+        gloss.insert(off, crate::quantum::words_of(&g));
+    }
+    let index = std::fs::read_to_string(format!("{dir}/index.noun")).unwrap_or_default();
+    let mut out = HashMap::new();
+    for line in index.lines().filter(|l| !l.starts_with(' ')) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let (Some(word), Some(n)) = (f.first(), f.get(2).and_then(|x| x.parse::<usize>().ok())) else { continue };
+        if word.contains('_') || f.len() < n {
+            continue;
+        }
+        let s: Vec<Vec<String>> = f[f.len() - n..].iter().filter_map(|o| gloss.get(o).cloned()).filter(|g| !g.is_empty()).collect();
+        if !s.is_empty() {
+            out.insert(word.to_string(), s);
+        }
+    }
+    out
+}
+
+/// how often people marked each written word a noun in UD (NOUN or PROPN, a share of its marks)
+pub fn ud_nouns() -> HashMap<String, f32> {
+    let mut c: HashMap<String, (u32, u32)> = HashMap::new();
+    for name in ["data/raw/ud/en_ewt-ud-train.conllu", "data/raw/ud/en_ewt-ud-dev.conllu"] {
+        for line in std::fs::read_to_string(name).unwrap_or_default().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 4 && !f[0].contains('-') && !f[0].contains('.') {
+                let e = c.entry(f[1].to_lowercase()).or_default();
+                e.0 += matches!(f[3], "NOUN" | "PROPN") as u32;
+                e.1 += 1;
+            }
+        }
+    }
+    c.into_iter().map(|(w, (n, t))| (w, n as f32 / t as f32)).collect()
+}
 
 /// base forms as people marked them in UD (the commonest lemma of each written form)
 pub fn ud_lemmas() -> HashMap<String, String> {
@@ -224,12 +273,20 @@ impl Read {
         let lemma = ud_lemmas();
         let base = |w: &str| lemma.get(w).cloned().unwrap_or_else(|| w.to_string());
         let mut defs: HashMap<String, Vec<String>> = HashMap::new();
-        for (i, d) in &net.defs {
+        let mut nouns: HashMap<String, Vec<String>> = HashMap::new();
+        // of a word written alike as a noun and a verb ("dog"), the definition of its most used kind (the dictionary's
+        // count of how often each was met in tagged text)
+        let mut by_use: Vec<(&u32, &String)> = net.defs.iter().collect();
+        by_use.sort_by_key(|(i, _)| (std::cmp::Reverse(net.node(**i).fam), **i));
+        for (i, d) in by_use {
             let word = net.node(*i).text.to_lowercase();
             if word.contains(' ') || word.contains('_') {
                 continue;
             }
             let d = d.split(';').next().unwrap_or("");
+            if net.node(*i).pos == primogenitus::network::Pos::Noun {
+                nouns.entry(word.clone()).or_insert_with(|| crate::quantum::words_of(d));
+            }
             let said: Vec<String> = crate::quantum::words_of(d).iter().map(|x| base(x)).filter(|x| *x != word).collect();
             if !said.is_empty() {
                 defs.entry(word).or_insert(said);
@@ -246,7 +303,8 @@ impl Read {
         }
         let n = defs.len() as f32;
         let idf = df.into_iter().map(|(w, c)| (w, (n / c as f32).ln())).collect();
-        Some(Read { seed, defs, lemma, idf, cache: Default::default() })
+        let senses = noun_senses();
+        Some(Read { seed, defs, nouns, senses, lemma, idf, cache: Default::default() })
     }
 
     /// the control: every word given another word's definition (same definitions, same sizes, no meaning)
@@ -259,7 +317,57 @@ impl Read {
             vals.swap(i, rng.gen_range(0..=i));
         }
         self.defs = keys.into_iter().zip(vals).collect();
+        let mut keys: Vec<String> = self.nouns.keys().cloned().collect();
+        keys.sort();
+        let mut vals: Vec<Vec<String>> = keys.iter().map(|k| self.nouns[k].clone()).collect();
+        for i in (1..vals.len()).rev() {
+            vals.swap(i, rng.gen_range(0..=i));
+        }
+        self.nouns = keys.into_iter().zip(vals).collect();
+        let mut keys: Vec<String> = self.senses.keys().cloned().collect();
+        keys.sort();
+        let mut vals: Vec<Vec<Vec<String>>> = keys.iter().map(|k| self.senses[k].clone()).collect();
+        for i in (1..vals.len()).rev() {
+            vals.swap(i, rng.gen_range(0..=i));
+        }
+        self.senses = keys.into_iter().zip(vals).collect();
         self
+    }
+
+    pub fn words(&self) -> impl Iterator<Item = &String> {
+        self.defs.keys()
+    }
+
+    /// a word's senses as a noun (definitions as written), most used first
+    pub fn senses(&self, w: &str) -> Option<&[Vec<String>]> {
+        self.senses.get(w).map(|v| v.as_slice())
+    }
+
+    pub fn sense_words(&self) -> impl Iterator<Item = &String> {
+        self.senses.keys()
+    }
+
+    /// a word in base form, as UD's annotators gave it
+    pub fn base(&self, w: &str) -> String {
+        self.lemma.get(w).cloned().unwrap_or_else(|| w.to_string())
+    }
+
+    /// what a text (as written) says, as a wave: its words in base form, each by how rare among the definitions
+    pub fn wave(&self, text: &[String]) -> HVec {
+        let b: Vec<String> = text.iter().map(|x| self.base(x)).collect();
+        self.says(&b)
+    }
+
+    pub fn noun_words(&self) -> impl Iterator<Item = &String> {
+        self.nouns.keys()
+    }
+
+    pub fn noun_def(&self, w: &str) -> Option<&[String]> {
+        self.nouns.get(w).map(|v| v.as_slice())
+    }
+
+    pub fn def(&self, w: &str) -> Option<&[String]> {
+        self.defs.get(w).map(|v| v.as_slice())
     }
 
     pub fn definitions(&self) -> usize {

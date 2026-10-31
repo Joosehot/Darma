@@ -16,6 +16,7 @@ mod quantum;
 mod understand;
 mod vector;
 mod words;
+mod know;
 
 use clap::{Parser, Subcommand};
 
@@ -70,6 +71,10 @@ enum Cmd {
     WordsTest,
     /// emotions read from the word network on DailyDialog (threshold on validation, measured on test)
     WordsEval,
+    /// what Darma knows from reading the dictionary: what is X, is X a Y (fixed questions, shuffled control)
+    KnowTest,
+    /// how Darma read each word of the dictionary
+    KnowShow { words: Vec<String> },
     /// what Darma read of each word
     WordsDefs { words: Vec<String> },
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
@@ -118,6 +123,8 @@ fn main() {
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
         Cmd::WordsTest => words::test(cli.seed),
         Cmd::WordsEval => words::eval(cli.dim, cli.seed),
+        Cmd::KnowTest => know::test(cli.seed),
+        Cmd::KnowShow { words } => know::show(cli.seed, &words),
         Cmd::WordsDefs { words } => words::show(cli.seed, &words),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Ask2 { verb, noun } => {

@@ -42,11 +42,14 @@ pub struct Core<'a> {
     /// how many noise deviations the winner's own fidelity must stand above zero in its register (learned the same
     /// way; a register holding m runs has noise of about sqrt(m / 2D) on one run's fidelity)
     pub fid_threshold: f32,
+    /// a keyed core (the dictionary's): only the words a fact was keyed on hold a register; a question's other words
+    /// ("is") are not measured in, rather than making it unanswerable
+    pub keyed: bool,
 }
 
 impl<'a> Core<'a> {
     pub fn new(at: &'a Atoms, meaning: Option<&'a Memory>, beta: f32) -> Self {
-        Core { at, meaning, beta, vacuum: at.get("vacuum"), ops: Default::default(), psi: HVec::zero(at.d), reg: HashMap::new(), with: HashMap::new(), told: 0, threshold: 0.0, fid_threshold: 0.0 }
+        Core { at, meaning, beta, vacuum: at.get("vacuum"), ops: Default::default(), psi: HVec::zero(at.d), reg: HashMap::new(), with: HashMap::new(), told: 0, threshold: 0.0, fid_threshold: 0.0, keyed: false }
     }
 
     /// a word as an operator: unit phases (its atom's, turned towards its meaning by beta)
@@ -94,6 +97,28 @@ impl<'a> Core<'a> {
         self.told += 1;
     }
 
+    /// telling with registers for these words only (the word a definition is of)
+    pub fn tell_keyed(&mut self, words: &[String], keys: &[String]) {
+        let s = self.state(words, None);
+        let nruns: usize = (1..=RUN).map(|n| words.len().saturating_sub(n - 1)).sum();
+        self.psi.add(&s);
+        let mut fills: Vec<String> = Vec::new();
+        for n in 1..=RUN {
+            fills.extend(words.windows(n).map(|p| p.join(" ")));
+        }
+        for w in keys {
+            let e = self.reg.entry(w.clone()).or_insert_with(|| (HVec::zero(self.at.d), 0, 0));
+            e.0.add(&s);
+            e.1 += 1;
+            e.2 += nruns;
+            let b = self.with.entry(w.clone()).or_default();
+            for f in &fills {
+                *b.entry(f.clone()).or_default() += 1;
+            }
+        }
+        self.told += 1;
+    }
+
     pub fn forget(&mut self, words: &[String]) {
         self.told_as(words, -1.0);
         self.told -= 1;
@@ -130,7 +155,7 @@ impl<'a> Core<'a> {
 
     /// the candidates a question can be measured on: what was told together with every word of the question
     pub fn candidates_for(&self, words: &[String]) -> Vec<String> {
-        let keys: Vec<&String> = words.iter().filter(|w| !HOLES.contains(&w.as_str())).collect();
+        let keys: Vec<&String> = words.iter().filter(|w| !HOLES.contains(&w.as_str()) && (!self.keyed || self.with.contains_key(*w))).collect();
         let Some(first) = keys.iter().filter_map(|w| self.with.get(*w)).min_by_key(|b| b.len()) else { return Vec::new() };
         let mut c: Vec<String> = first.keys().filter(|f| keys.iter().all(|w| self.with.get(*w).is_some_and(|b| b.contains_key(*f)))).cloned().collect();
         c.sort();
@@ -140,11 +165,14 @@ impl<'a> Core<'a> {
     /// the registers to measure in: one per word of the question. An answer was told together with every one of
     /// them, so it must show in each; a word never told means memory cannot answer (None)
     fn collapse(&self, words: &[String]) -> Option<Vec<(&HVec, usize)>> {
-        let all: Vec<(&HVec, usize)> = words.iter().filter(|w| !HOLES.contains(&w.as_str())).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| (&r.0, r.2))).collect::<Option<_>>()?;
+        let all: Vec<(&HVec, usize)> = words.iter().filter(|w| !HOLES.contains(&w.as_str()) && (!self.keyed || self.reg.contains_key(*w))).map(|w| self.reg.get(w).filter(|r| r.1 > 0).map(|r| (&r.0, r.2))).collect::<Option<_>>()?;
         // a register can tell a full match (fidelity 1) from noise only if its noise on one run, sqrt(m / 2D), is at
         // most a third of it (three deviations); a register holding too much is not measured in. If none can, the
         // one holding least is.
         let limit = 2.0 * self.at.d as f32 / 9.0;
+        if all.is_empty() {
+            return None;
+        }
         let sharp: Vec<(&HVec, usize)> = all.iter().filter(|r| r.1 as f32 <= limit).cloned().collect();
         if sharp.is_empty() {
             all.into_iter().min_by_key(|r| r.1).map(|r| vec![r])
