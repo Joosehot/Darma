@@ -530,7 +530,7 @@ impl<'a> Talk<'a> {
         let mut v: Vec<(String, String)> = c
             .hear(w)
             .into_iter()
-            .filter(|x| (matches!(x.pos.as_str(), "NOUN" | "PROPN") || matches!(x.rel.as_str(), "obj" | "nsubj" | "obl")) && !matches!(x.pos.as_str(), "PRON" | "DET" | "AUX" | "VERB"))
+            .filter(|x| (matches!(x.pos.as_str(), "NOUN" | "PROPN") || matches!(x.rel.as_str(), "obj" | "nsubj" | "obl") || x.head == 0) && !matches!(x.pos.as_str(), "PRON" | "DET" | "AUX" | "VERB" | "ADV" | "SCONJ" | "CCONJ" | "ADP" | "PART" | "PUNCT"))
             .filter(|x| !c.small.contains(&x.word) && !matches!(x.word.as_str(), "darma" | "i" | "you" | "me" | "yourself" | "myself"))
             .map(|x| (c.lemma_of(&x.word, "NOUN"), x.word))
             .collect();
@@ -547,7 +547,13 @@ impl<'a> Talk<'a> {
         }
         let liking = ["like", "love", "enjoy", "hate", "prefer"];
         let lemmas: Vec<String> = self.cpt.as_ref()?.hear(&crate::me::to_me(w)).into_iter().map(|x| x.lemma).collect();
-        let think_about = lemmas.iter().any(|x| x == "think") && w.iter().any(|x| x == "about" || x == "of");
+        let think = lemmas.iter().any(|x| x == "think");
+        let think_about = think && w.iter().any(|x| x == "about" || x == "of");
+        // what it thinks of a claim ("do you think that's wrong"): it has no judgment of its own on it, and says so
+        // (its drives weigh learning and talking, not right and wrong)
+        if think && !think_about && self.asks(line, w) {
+            return Some(Reply { said: "I don't know what I think about that yet.".into(), why: "my will has nothing of its own to judge that by".into(), kind: "will", recall: String::new(), ask: String::new() });
+        }
         if !lemmas.iter().any(|x| liking.contains(&x.as_str())) && !think_about {
             return None;
         }
@@ -567,7 +573,8 @@ impl<'a> Talk<'a> {
         let read = self.wiki.as_ref().and_then(|wk| wk.lead(&thing)).map(|r| {
             let first = r.split(' ').next().unwrap_or("").to_lowercase();
             let name = self.cpt.as_ref().is_some_and(|c| c.hear(&words_of(&r)).first().is_some_and(|x| x.pos == "PROPN")) && first != thing && crate::cpt::base_of(&first) != thing;
-            if name || said_as.chars().next().is_some_and(|c| c.is_uppercase()) { r } else { r.get(..1).map(|f| f.to_lowercase() + &r[1..]).unwrap_or(r) }
+            let article = matches!(first.as_str(), "a" | "an" | "the");
+            if !article && (name || said_as.chars().next().is_some_and(|c| c.is_uppercase())) { r } else { r.get(..1).map(|f| f.to_lowercase() + &r[1..]).unwrap_or(r) }
         });
         let (s, reasons, before) = self.will.choose(&thing, read.as_deref());
         let mut said = crate::will::say(&said_as, &s, &reasons, before.as_deref());

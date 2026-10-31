@@ -256,9 +256,16 @@ pub fn near(q: &[Node], f: &[Node], small: &HashSet<String>) -> Option<f32> {
     let fl: HashSet<&str> = f.iter().map(|x| x.lemma.as_str()).collect();
     let asked = asked_with(q);
     let share = asked.iter().filter(|w| fl.contains(*w)).count() as f32 / asked.len().max(1) as f32;
-    let be_q = q.iter().any(|x| x.lemma == "be") && hole(q).is_none();
+    // "are you X": the "be" and the doer hang on the core itself (not "do you think that's wrong", whose "be" is in
+    // another clause)
+    let core = q.iter().position(|x| x.head == 0);
+    let on_core = |x: &Node| core.is_some_and(|c| x.head == c + 1 || x.head == 0);
+    let be_q = q.iter().any(|x| x.lemma == "be" && on_core(x)) && q.iter().any(|x| x.rel == "nsubj" && on_core(x)) && hole(q).is_none() && !q.iter().any(|x| x.head == 0 && x.pos == "VERB");
     if be_q {
         return names_a_thing(f).then_some(share);
+    }
+    if q.iter().any(|x| x.lemma == "be") && hole(q).is_none() {
+        return None;
     }
     asked.iter().any(|w| fl.contains(w) && !small.contains(*w) && *w != a).then_some(share)
 }

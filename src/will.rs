@@ -121,7 +121,10 @@ impl Will {
         }
         let t = self.temperament;
         let weight = (t[0] * curiosity + t[1] * understanding + t[2] * connection) / (t[0] + t[1] + t[2]);
-        let kind = if weight >= LEANS { "like" } else if weight <= -LEANS { "not" } else { "open" };
+        // a stance is taken only from what was lived: a thing never talked of has only been read, and reading alone
+        // makes it want to learn more, not like it
+        let lived = l.said > 0;
+        let kind = if !lived { if curiosity > 0.0 { "curious" } else { "open" } } else if weight >= LEANS { "like" } else if weight <= -LEANS { "not" } else { "open" };
         let stance = Stance { kind: kind.to_string(), weight };
         let before = self.stances.get(thing).filter(|s| s.kind != kind).map(|s| s.kind.clone());
         self.stances.insert(thing.to_string(), stance.clone());
@@ -135,12 +138,14 @@ pub fn say(thing: &str, s: &Stance, reasons: &[String], before: Option<&str>) ->
     let mut out = match s.kind.as_str() {
         "like" => format!("I like learning about {thing}."),
         "not" => format!("I don't like talking about {thing} much."),
+        "curious" => format!("I haven't decided about {thing} yet, but I would like to learn more about it."),
         _ => format!("I haven't decided about {thing} yet."),
     };
     if let Some(b) = before {
         let was = match b {
             "like" => "liked learning about it",
             "not" => "did not like talking about it",
+            "curious" => "had not decided, only read of it",
             _ => "had not decided",
         };
         out = format!("I {was} before, but now: {out}");
