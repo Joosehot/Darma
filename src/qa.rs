@@ -552,7 +552,7 @@ impl<'a> Talk<'a> {
         // what it thinks of a claim ("do you think that's wrong"): it has no judgment of its own on it, and says so
         // (its drives weigh learning and talking, not right and wrong)
         if think && !think_about && self.asks(line, w) {
-            return Some(Reply { said: "I don't know what I think about that yet.".into(), why: "my will has nothing of its own to judge that by".into(), kind: "will", recall: String::new(), ask: String::new() });
+            return Some(self.claim(w));
         }
         if !lemmas.iter().any(|x| liking.contains(&x.as_str())) && !think_about {
             return None;
@@ -576,12 +576,77 @@ impl<'a> Talk<'a> {
             let article = matches!(first.as_str(), "a" | "an" | "the");
             if !article && (name || said_as.chars().next().is_some_and(|c| c.is_uppercase())) { r } else { r.get(..1).map(|f| f.to_lowercase() + &r[1..]).unwrap_or(r) }
         });
-        let (s, reasons, before) = self.will.choose(&thing, read.as_deref());
+        let known = self.wiki.as_ref().map(|wk| (wk.depth(&thing), wk.known_at())).filter(|(d, at)| d >= at).map(|x| x.0);
+        let (s, reasons, before) = self.will.choose(&thing, read.as_deref(), known);
         let mut said = crate::will::say(&said_as, &s, &reasons, before.as_deref());
         if !asked {
             said = format!("I choose that myself. {said}");
         }
         Some(Reply { said, why: format!("my will: weighed {:.2} (curiosity, understanding, connection by my temperament {:.2}/{:.2}/{:.2})", s.weight, self.will.temperament[0], self.will.temperament[1], self.will.temperament[2]), kind: "will", recall: String::new(), ask: String::new() })
+    }
+
+    /// what it thinks of a claim ("do you think abortions are wrong"), from what it knows: what it read says it is so
+    /// (it thinks so); people stand on both sides (it says so, and that its own reasons do not decide it); or it does
+    /// not know. Its own drives weigh learning and talking, not right and wrong, so it takes no side of its own
+    fn claim(&self, w: &[String]) -> Reply {
+        let r = |said: String, why: String| Reply { said, why, kind: "will", recall: String::new(), ask: String::new() };
+        let Some(cpt) = self.cpt.as_ref() else { return r("I don't know what I think about that yet.".into(), String::new()) };
+        // the claim: what comes after "think" (and "that")
+        let k = w.iter().position(|x| x == "think").map_or(0, |k| k + 1);
+        let claim: Vec<String> = w[k..].iter().skip_while(|x| *x == "that").cloned().collect();
+        let things = self.things_said(&claim);
+        // the thing: the first one said, or the word before its "is" ("smoking is bad", heard as a doing)
+        let before_be = claim.iter().position(|x| self.copulas.contains(x)).filter(|&b| b > 0).map(|b| claim[b - 1].clone()).filter(|x| !cpt.small.contains(x));
+        let Some((mut thing, mut said_as)) = claim.iter().find_map(|x| things.iter().find(|t| t.1 == *x).cloned()).or(before_be.map(|x| (cpt.lemma_of(&x, "NOUN"), x))) else {
+            return r("I don't know what I think about that yet.".into(), "I could not tell what it is about".into());
+        };
+        // a claim of worth (wrong, good, harmful ...: English words set by hand) is one people stand on; another claim
+        // is of what is so
+        let worth = ["wrong", "right", "good", "bad", "evil", "moral", "immoral", "ok", "okay", "fine", "harmful", "dangerous", "cruel", "fair", "unfair", "acceptable", "unacceptable", "ethical", "unethical", "better", "worse", "best", "worst", "important", "useful", "useless"];
+        let of_worth = claim.iter().any(|x| worth.contains(&x.as_str()));
+        let Some(wk) = self.wiki.as_ref() else { return r("I don't know what I think about that yet.".into(), String::new()) };
+        // a thing of two words ("death penalty") when it has an article of its own
+        if let Some(i) = claim.iter().position(|x| *x == said_as) {
+            if let Some(next) = claim.get(i + 1) {
+                let two = format!("{said_as} {next}");
+                if wk.has_title(&two) {
+                    thing = two.clone();
+                    said_as = two;
+                }
+            }
+        }
+        // what it read says so: the claim as a question, answered from the thing's article
+        let mut q = claim.clone();
+        if let Some(b) = q.iter().position(|x| self.copulas.contains(x)) {
+            let c = q.remove(b);
+            q.insert(0, c);
+        }
+        let qn = cpt.hear_as(&q, "?");
+        if let Some((_, f)) = wk.answer_named(&qn, &claim, &cpt.small).into_iter().next() {
+            return r(format!("I think so. I read that {}", f.text), format!("what I read of {thing} says so"));
+        }
+        let (con, pro) = if of_worth { wk.sides(&thing) } else { (Vec::new(), Vec::new()) };
+        let lead = wk.lead(&thing);
+        // people disagree when it read at least two on each side; else it says the side it read
+        if con.len() >= 2 && pro.len() >= 2 {
+            let mut said = format!("I know that people disagree about {said_as}.");
+            if let Some(c) = con.first() {
+                said.push_str(&format!(" Some are against it: \"{c}\""));
+            }
+            if let Some(p) = pro.first() {
+                said.push_str(&format!(" Some are for it: \"{p}\""));
+            }
+            said.push_str(" My own reasons don't decide it, so I don't take a side.");
+            return r(said, format!("I read {} sentences against and {} for {thing}; my drives weigh learning and talking, not right and wrong", con.len(), pro.len()));
+        }
+        if let Some(c) = con.first().or(pro.first()) {
+            let side = if con.is_empty() { "for" } else { "against" };
+            return r(format!("I read that some people are {side} {said_as}: \"{c}\" My own reasons don't decide it, so I don't take a side."), format!("I read only one side of {thing}"));
+        }
+        match lead {
+            Some(l) => r(format!("I don't know. I read that {}, but nothing I know says whether that is so.", l.trim_end_matches('.')), format!("what I read of {thing} does not say")),
+            None => r("I don't know what I think about that yet.".into(), format!("I know nothing of {thing}")),
+        }
     }
 
     /// conscious parallel thinking, v0: the question heard into a structure, every known sentence heard the same

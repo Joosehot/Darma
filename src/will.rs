@@ -90,9 +90,13 @@ impl Will {
 
     /// its stance on a thing, weighed now from its reasons: (the stance, its reasons as sentences, what it was
     /// before if it changed)
-    pub fn choose(&mut self, thing: &str, read: Option<&str>) -> (Stance, Vec<String>, Option<String>) {
+    /// `known`: how much it read of the thing, if that is enough to know it (the most read tenth)
+    pub fn choose(&mut self, thing: &str, read: Option<&str>, known: Option<usize>) -> (Stance, Vec<String>, Option<String>) {
         let l = self.lived.get(thing).cloned().unwrap_or_default();
         let mut reasons = Vec::new();
+        if let Some(n) = known {
+            reasons.push(format!("I know quite a lot about it: I have read {n} things about it"));
+        }
         // curiosity: something to learn of it, the more while it is new
         let curiosity = if let Some(r) = read {
             reasons.push(format!("I read that {}", r.trim_end_matches('.')));
@@ -121,9 +125,9 @@ impl Will {
         }
         let t = self.temperament;
         let weight = (t[0] * curiosity + t[1] * understanding + t[2] * connection) / (t[0] + t[1] + t[2]);
-        // a stance is taken only from what was lived: a thing never talked of has only been read, and reading alone
-        // makes it want to learn more, not like it
-        let lived = l.said > 0;
+        // a stance is taken from what was lived, or from knowing the thing well (much read of it: there is much to
+        // learn, and it can say what it is); a thing only glanced at in reading makes it want to learn more
+        let lived = l.said > 0 || known.is_some();
         let kind = if !lived { if curiosity > 0.0 { "curious" } else { "open" } } else if weight >= LEANS { "like" } else if weight <= -LEANS { "not" } else { "open" };
         let stance = Stance { kind: kind.to_string(), weight };
         let before = self.stances.get(thing).filter(|s| s.kind != kind).map(|s| s.kind.clone());

@@ -111,11 +111,81 @@ impl Wiki {
         serde_json::from_str(&std::fs::read_to_string(best?.1).ok()?).ok()
     }
 
+    /// has the thing an article of its own?
+    pub fn has_title(&self, thing: &str) -> bool {
+        self.titles.iter().any(|x| { let x = x.to_lowercase(); x == thing || crate::cpt::base_of(&x) == thing })
+    }
+
+    /// how much it read of a thing: the sentences holding it
+    pub fn depth(&self, thing: &str) -> usize {
+        self.index.get(thing).map_or(0, |v| v.len())
+    }
+
+    /// how much reading makes a thing known: as much as the most read tenth of the things it read of (learned from
+    /// its knowledge itself)
+    pub fn known_at(&self) -> usize {
+        let mut v: Vec<usize> = self.index.values().map(|x| x.len()).filter(|&n| n > 1).collect();
+        v.sort_unstable();
+        v.get(v.len() * 9 / 10).copied().unwrap_or(usize::MAX)
+    }
+
+    /// what the sentences holding a thing say of where people stand on it: those speaking against it and those for
+    /// it. Only a standing said right before the thing counts ("against slavery", "opposes abortion", "did not allow
+    /// slavery": a "not" or "n't" just before turns it), for hearing errs on long sentences and a standing read wrong
+    /// would be quoted for what it is not (the words of standing are English, set by hand)
+    pub fn sides(&self, thing: &str) -> (Vec<String>, Vec<String>) {
+        let (mut con, mut pro) = (Vec::new(), Vec::new());
+        let tw: Vec<&str> = thing.split(' ').collect();
+        let con_w = ["against", "oppose", "opposes", "opposed", "opposing", "ban", "bans", "banned", "banning", "forbid", "forbids", "forbade", "prohibit", "prohibits", "prohibited"];
+        let pro_w = ["support", "supports", "supported", "supporting", "legalize", "legalized", "legalise", "legalised", "allow", "allows", "allowed", "allowing", "permit", "permits", "permitted"];
+        let first = tw[0];
+        for &i in self.index.get(first).map(|v| v.as_slice()).unwrap_or(&[]) {
+            let f = &self.facts[i as usize];
+            if f.text.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            // the words as written, small (a capital word is part of a name: "Rock Against Communism")
+            let raw: Vec<&str> = f.text.split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|x| !x.is_empty()).collect();
+            let low: Vec<String> = raw.iter().map(|x| x.to_lowercase()).collect();
+            let same = |a: &str, b: &str| a == b || crate::cpt::base_of(a) == b;
+            let mut stand = 0i32;
+            for k in 0..low.len() {
+                if !(0..tw.len()).all(|j| low.get(k + j).is_some_and(|x| same(x, tw[j]))) {
+                    continue;
+                }
+                // the word just before (an article between: "against the death penalty")
+                let mut m = k;
+                while m > 0 && matches!(low[m - 1].as_str(), "the" | "a" | "an") {
+                    m -= 1;
+                }
+                if m == 0 {
+                    continue;
+                }
+                let w = &low[m - 1];
+                if raw[m - 1].chars().next().is_some_and(|c| c.is_uppercase()) {
+                    continue;
+                }
+                let sign = if con_w.contains(&w.as_str()) { -1 } else if pro_w.contains(&w.as_str()) { 1 } else { 0 };
+                if sign != 0 {
+                    let not = (m.saturating_sub(3)..m - 1).any(|j| matches!(low[j].as_str(), "not" | "never" | "t"));
+                    stand = if not { -sign } else { sign };
+                }
+            }
+            if stand < 0 {
+                con.push(f.text.clone());
+            } else if stand > 0 {
+                pro.push(f.text.clone());
+            }
+        }
+        (con, pro)
+    }
+
     /// the first sentence of a thing's own article ("music": "Music is a form of art ...")
     pub fn lead(&self, thing: &str) -> Option<String> {
         let t = self.titles.iter().position(|x| { let x = x.to_lowercase(); x == thing || crate::cpt::base_of(&x) == thing })? as u32;
         let i = self.facts.partition_point(|f| f.title < t);
-        let f = self.facts.get(i).filter(|f| f.title == t)?;
+        // (markup the export left is no sentence: "[[File:...")
+        let f = self.facts[i..].iter().take_while(|f| f.title == t).find(|f| !f.text.contains("[[") && !f.text.contains("|"))?;
         Some(f.text.trim().to_string())
     }
 
@@ -135,13 +205,23 @@ impl Wiki {
     /// says something else: "the Death Star is a moon-sized station" is not "the moon is a star"), then cpt::fit; the
     /// best fitting, the article's sentences in their order
     pub fn answer(&self, q: &[Node], small: &std::collections::HashSet<String>) -> Vec<(f32, &Fact)> {
+        let qw: Vec<String> = q.iter().map(|x| x.word.clone()).collect();
+        self.answer_named(q, &qw, small)
+    }
+
+    /// the same, the article's title looked for in `named` (the question's words in the order they were said)
+    pub fn answer_named(&self, q: &[Node], named: &[String], small: &std::collections::HashSet<String>) -> Vec<(f32, &Fact)> {
         let asked = crate::cpt::asked_with(q);
         let Some(rare) = asked.iter().filter(|w| !small.contains(**w) || asked.len() == 1).filter_map(|w| self.index.get(*w)).min_by_key(|v| v.len()) else { return Vec::new() };
         let words: Vec<String> = q.iter().map(|x| x.lemma.clone()).chain(q.iter().map(|x| x.word.clone())).collect();
-        // the article asked about: every word of its title in the question ("albert einstein")
+        // the article asked about: its title named in the question, its words one after another as in the title
+        // ("albert einstein"; not "GOOD Music" for "is music good")
+        let qw: Vec<String> = named.to_vec();
+        let _ = &words;
         let about = |f: &Fact| {
             let tw = words_of(&self.titles[f.title as usize]);
-            !tw.is_empty() && tw.iter().all(|x| words.contains(x) || words.contains(&crate::cpt::base_of(x)))
+            let same = |a: &String, b: &String| a == b || crate::cpt::base_of(a) == crate::cpt::base_of(b);
+            !tw.is_empty() && qw.windows(tw.len()).any(|win| win.iter().zip(&tw).all(|(a, b)| same(a, b)))
         };
         let mut out: Vec<(f32, u32, &Fact)> = rare.iter().map(|&i| (i, &self.facts[i as usize])).filter(|(_, f)| about(f)).filter_map(|(i, f)| crate::cpt::fit(q, &f.nodes).map(|s| (s, i, f))).collect();
         // the article's own sentences in their order: its first says what it is
