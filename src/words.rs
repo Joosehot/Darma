@@ -118,8 +118,55 @@ impl Words {
         m
     }
 
+}
+
+/// what a word means, as a wave: from the network (Words) or from what Darma read (Read)
+pub trait Meaning {
+    fn meaning(&self, text: &str) -> Option<HVec>;
+
+    /// how alike two words are in meaning (1 for the same word, 0 for a word the network does not hold)
+    fn sim(&self, a: &str, b: &str) -> f32 {
+        if a == b {
+            return 1.0;
+        }
+        match (self.meaning(a), self.meaning(b)) {
+            (Some(x), Some(y)) => x.sim(&y).max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// how alike two lines are: each word's best match in the other line (in meaning), weighed by the word's weight,
+    /// both ways
+    fn alike(&self, a: &[String], b: &[String], weight: &dyn Fn(&str) -> f32) -> f32 {
+        let one = |x: &[String], y: &[String]| {
+            let (mut s, mut n) = (0.0f32, 0.0f32);
+            for w in x {
+                let k = weight(w);
+                s += k * y.iter().map(|v| self.sim(w, v)).fold(0.0, f32::max);
+                n += k;
+            }
+            if n > 0.0 { s / n } else { 0.0 }
+        };
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        0.5 * (one(a, b) + one(b, a))
+    }
+
+    /// the emotions a line's words resonate with: each emotion (by its name) and its strongest resonance in the line
+    fn feelings(&self, line: &[String]) -> Vec<(&'static str, f32)> {
+        crate::understand::EMOTIONS[1..].iter().map(|e| (*e, line.iter().map(|w| self.sim(w, e)).fold(0.0, f32::max))).collect()
+    }
+
+    /// the emotion read from the line's words, if one resonates at least `at` (the strongest)
+    fn feeling(&self, line: &[String], at: f32) -> Option<&'static str> {
+        self.feelings(line).into_iter().filter(|x| x.1 >= at).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|x| x.0)
+    }
+}
+
+impl Meaning for Words {
     /// a word's meaning (any form: "dogs", "went"): its base words' meanings, each by how often the word is used so
-    pub fn meaning(&self, text: &str) -> Option<HVec> {
+    fn meaning(&self, text: &str) -> Option<HVec> {
         if let Some(m) = self.word_cache.borrow().get(text) {
             return m.clone();
         }
@@ -138,44 +185,133 @@ impl Words {
         self.word_cache.borrow_mut().insert(text.to_string(), m.clone());
         m
     }
+}
 
-    /// how alike two words are in meaning (1 for the same word, 0 for a word the network does not hold)
-    pub fn sim(&self, a: &str, b: &str) -> f32 {
-        if a == b {
-            return 1.0;
-        }
-        match (self.meaning(a), self.meaning(b)) {
-            (Some(x), Some(y)) => x.sim(&y).max(0.0),
-            _ => 0.0,
-        }
-    }
+/// Darma's own word network: read from a dictionary's text, not taken from its structure. Darma reads each word's
+/// definition (the dictionary's sentence for its most common sense) and brings every word to its base form as UD's
+/// annotators did; a word's meaning is its own atom, the atoms of the words its definition says, and (a step further)
+/// of the words their definitions say, each weighed by how rare the word is among the definitions read.
+pub struct Read {
+    seed: u64,
+    defs: HashMap<String, Vec<String>>,
+    lemma: HashMap<String, String>,
+    idf: HashMap<String, f32>,
+    cache: RefCell<HashMap<String, Option<HVec>>>,
+}
 
-    /// how alike two lines are: each word's best match in the other line (in meaning), weighed by the word's weight,
-    /// both ways
-    pub fn alike(&self, a: &[String], b: &[String], weight: &dyn Fn(&str) -> f32) -> f32 {
-        let one = |x: &[String], y: &[String]| {
-            let (mut s, mut n) = (0.0f32, 0.0f32);
-            for w in x {
-                let k = weight(w);
-                s += k * y.iter().map(|v| self.sim(w, v)).fold(0.0, f32::max);
-                n += k;
+/// how much a word's definition weighs in its meaning (its own atom 1), and the definitions' definitions (set by hand)
+pub const SAYS: f32 = 1.0;
+pub const SAYS2: f32 = 0.5;
+
+/// base forms as people marked them in UD (the commonest lemma of each written form)
+pub fn ud_lemmas() -> HashMap<String, String> {
+    let mut c: HashMap<String, HashMap<String, u32>> = HashMap::new();
+    for name in ["data/raw/ud/en_ewt-ud-train.conllu", "data/raw/ud/en_ewt-ud-dev.conllu"] {
+        for line in std::fs::read_to_string(name).unwrap_or_default().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 4 && !f[0].contains('-') && !f[0].contains('.') {
+                *c.entry(f[1].to_lowercase()).or_default().entry(f[2].to_lowercase()).or_default() += 1;
             }
-            if n > 0.0 { s / n } else { 0.0 }
-        };
-        if a.is_empty() || b.is_empty() {
-            return 0.0;
         }
-        0.5 * (one(a, b) + one(b, a))
+    }
+    c.into_iter().filter_map(|(w, m)| m.into_iter().max_by_key(|x| x.1).map(|x| (w, x.0))).collect()
+}
+
+impl Read {
+    /// read the definitions (the text alone: a word and its sentence)
+    pub fn read(seed: u64) -> Option<Read> {
+        let net = Network::load(std::path::Path::new(&network_path()?)).ok()?;
+        let lemma = ud_lemmas();
+        let base = |w: &str| lemma.get(w).cloned().unwrap_or_else(|| w.to_string());
+        let mut defs: HashMap<String, Vec<String>> = HashMap::new();
+        for (i, d) in &net.defs {
+            let word = net.node(*i).text.to_lowercase();
+            if word.contains(' ') || word.contains('_') {
+                continue;
+            }
+            let d = d.split(';').next().unwrap_or("");
+            let said: Vec<String> = crate::quantum::words_of(d).iter().map(|x| base(x)).filter(|x| *x != word).collect();
+            if !said.is_empty() {
+                defs.entry(word).or_insert(said);
+            }
+        }
+        let mut df: HashMap<String, u32> = HashMap::new();
+        for d in defs.values() {
+            let mut seen: Vec<&String> = d.iter().collect();
+            seen.sort();
+            seen.dedup();
+            for w in seen {
+                *df.entry(w.clone()).or_default() += 1;
+            }
+        }
+        let n = defs.len() as f32;
+        let idf = df.into_iter().map(|(w, c)| (w, (n / c as f32).ln())).collect();
+        Some(Read { seed, defs, lemma, idf, cache: Default::default() })
     }
 
-    /// the emotions a line's words resonate with: each emotion (by its name) and its strongest resonance in the line
-    pub fn feelings(&self, line: &[String]) -> Vec<(&'static str, f32)> {
-        crate::understand::EMOTIONS[1..].iter().map(|e| (*e, line.iter().map(|w| self.sim(w, e)).fold(0.0, f32::max))).collect()
+    /// the control: every word given another word's definition (same definitions, same sizes, no meaning)
+    pub fn shuffled(mut self) -> Read {
+        let mut keys: Vec<String> = self.defs.keys().cloned().collect();
+        keys.sort();
+        let mut vals: Vec<Vec<String>> = keys.iter().map(|k| self.defs[k].clone()).collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(self.seed ^ 0x5eed);
+        for i in (1..vals.len()).rev() {
+            vals.swap(i, rng.gen_range(0..=i));
+        }
+        self.defs = keys.into_iter().zip(vals).collect();
+        self
     }
 
-    /// the emotion read from the line's words, if one resonates at least `at` (the strongest)
-    pub fn feeling(&self, line: &[String], at: f32) -> Option<&'static str> {
-        self.feelings(line).into_iter().filter(|x| x.1 >= at).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|x| x.0)
+    pub fn definitions(&self) -> usize {
+        self.defs.len()
+    }
+
+    fn atom(&self, w: &str) -> HVec {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in w.bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        let mut r = ChaCha8Rng::seed_from_u64(self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ h);
+        HVec::random(WORDS_D, &mut r)
+    }
+
+    fn rare(&self, w: &str) -> f32 {
+        *self.idf.get(w).unwrap_or(&(self.defs.len() as f32).ln())
+    }
+
+    /// what a definition says, as a wave: its words' atoms, each by how rare (summing to 1)
+    fn says(&self, d: &[String]) -> HVec {
+        let mut m = HVec::zero(WORDS_D);
+        let total: f32 = d.iter().map(|x| self.rare(x)).sum::<f32>().max(1e-6);
+        for x in d {
+            m.add_scaled(&self.atom(x), self.rare(x) / total);
+        }
+        // as long as a word's own atom: a definition weighs SAYS against the word itself, whatever its length
+        let n = m.norm().max(1e-6);
+        let k = (WORDS_D as f32).sqrt() / n;
+        HVec(m.0.iter().map(|c| c * k).collect())
+    }
+}
+
+impl Meaning for Read {
+    fn meaning(&self, text: &str) -> Option<HVec> {
+        if let Some(m) = self.cache.borrow().get(text) {
+            return m.clone();
+        }
+        let w = if self.defs.contains_key(text) { text.to_string() } else { self.lemma.get(text).cloned().unwrap_or_else(|| text.to_string()) };
+        let m = self.defs.get(&w).map(|d| {
+            let mut m = self.atom(&w);
+            m.add_scaled(&self.says(d), SAYS);
+            let total: f32 = d.iter().map(|x| self.rare(x)).sum::<f32>().max(1e-6);
+            for x in d {
+                if let Some(dx) = self.defs.get(x) {
+                    m.add_scaled(&self.says(dx), SAYS2 * self.rare(x) / total);
+                }
+            }
+            m
+        });
+        self.cache.borrow_mut().insert(text.to_string(), m.clone());
+        m
     }
 }
 
@@ -188,8 +324,13 @@ pub fn test(seed: u64) {
     let alike = [("hi", "hello"), ("sad", "unhappy"), ("dog", "puppy"), ("car", "automobile"), ("angry", "mad"), ("sad", "sadness"), ("afraid", "fear"), ("happy", "happiness"), ("bye", "goodbye"), ("thanks", "thank")];
     let unlike = [("dog", "sky"), ("hello", "car"), ("sad", "carrot"), ("happy", "table"), ("angry", "music"), ("bye", "potato"), ("car", "fear"), ("puppy", "sadness"), ("hi", "river"), ("thanks", "dog")];
     let feel = [("i am so sad today", "sadness"), ("i am angry at my boss", "anger"), ("i am scared of the dark", "fear"), ("i am so happy for you", "happiness"), ("that is disgusting", "disgust"), ("wow what a surprise", "surprise"), ("the bus leaves at nine", "none"), ("what is your name", "none")];
+    let t1 = std::time::Instant::now();
+    let read = Read::read(seed).unwrap();
+    println!("Darma read {} definitions in {:.1} s", read.definitions(), t1.elapsed().as_secs_f64());
+    let read_shuffled = Read::read(seed).unwrap().shuffled();
     let shuffled = Words::load(seed).unwrap().shuffled();
-    for (name, w) in [("the network", &w), ("shuffled (control)", &shuffled)] {
+    let all: [(&str, &dyn Meaning); 4] = [("the network (WordNet's structure)", &w), ("the network shuffled (control)", &shuffled), ("Darma's own, read from the definitions", &read), ("read, definitions shuffled (control)", &read_shuffled)];
+    for (name, w) in all {
         let a: Vec<f32> = alike.iter().map(|(x, y)| w.sim(x, y)).collect();
         let u: Vec<f32> = unlike.iter().map(|(x, y)| w.sim(x, y)).collect();
         let umax = u.iter().cloned().fold(0.0, f32::max);
@@ -270,5 +411,14 @@ pub fn eval(dim: usize, seed: u64) {
         }
         let (m, f) = f1(p);
         println!("test ({} turns): {name}: mean F1 {m:.3};{}", p.len(), names.iter().zip(&f).map(|(n, x)| format!(" {n} {x:.2}")).collect::<String>());
+    }
+}
+
+/// `darma words-defs <word>...`: what Darma read of each word
+pub fn show(seed: u64, words: &[String]) {
+    let r = Read::read(seed).unwrap();
+    for w in words {
+        let base = r.lemma.get(w.as_str()).cloned().unwrap_or_default();
+        println!("{w} (UD base {base}): {:?}", r.defs.get(w.as_str()).or(r.defs.get(&base)));
     }
 }

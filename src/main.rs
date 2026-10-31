@@ -70,6 +70,8 @@ enum Cmd {
     WordsTest,
     /// emotions read from the word network on DailyDialog (threshold on validation, measured on test)
     WordsEval,
+    /// what Darma read of each word
+    WordsDefs { words: Vec<String> },
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
     ComposeEval,
     /// the questions Darma's grammar makes of a verb and a noun
@@ -116,6 +118,7 @@ fn main() {
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
         Cmd::WordsTest => words::test(cli.seed),
         Cmd::WordsEval => words::eval(cli.dim, cli.seed),
+        Cmd::WordsDefs { words } => words::show(cli.seed, &words),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Ask2 { verb, noun } => {
             let g = grammar::Grammar::learn("data/ud_short.json").expect("run prepare-data first");

@@ -178,11 +178,19 @@ pub struct Talk<'a> {
     lived_log: std::fs::File,
     /// the word network imprinted (Primo's WordNet): what words mean, so a lived line is found in other words too
     /// ("hi" for "hello")
-    words: Option<crate::words::Words>,
+    words: Option<crate::words::Read>,
+    /// how alike a line must be to a lived one (learned from chance pairs when there is a network)
+    lived_at: f32,
+    /// how alike two words must be to stand for each other (learned from chance pairs of words)
+    word_at: f32,
 }
 
-/// how alike a line must be to a lived one for Darma to answer as it learned (set by hand)
+/// how alike a line must be to a lived one for Darma to answer as it learned, when it cannot learn it (no network)
+/// (set by hand)
 pub const LIVED_AT: f32 = 0.6;
+/// with the network, the threshold is learned: the likeness that only this share of chance pairs of people's
+/// sentences (unrelated lines) reach
+pub const CHANCE: f32 = 0.005;
 /// a social formula (a greeting, thanks, a goodbye) is a short line very like what people said: only then are
 /// people's answers used (set by hand)
 pub const SOCIAL_AT: f32 = 0.8;
@@ -218,7 +226,24 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), words: crate::words::Words::load(1), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), words: crate::words::Read::read(1), lived_at: LIVED_AT, word_at: 0.0, lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
+        // what chance likeness looks like: 400 people's sentences, each against the next ones (unrelated lines); the
+        // threshold is where only CHANCE of them reach
+        if let (Some(n), Some(d)) = (talk.words.as_ref(), talk.dialog.as_ref()) {
+            let s = d.sample(400);
+            let m = s.len();
+            let mut v: Vec<f32> = (0..s.len()).flat_map(|i| (1..=5).map(move |j| (i, (i + j * 37) % m))).map(|(i, j)| crate::words::Meaning::alike(n, s[i], s[j], &|x| d.idf(x))).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            talk.lived_at = v[((1.0 - CHANCE) * v.len() as f32) as usize];
+            // and of words: the rare words of those sentences, each against others
+            let mut ws: Vec<&String> = s.iter().flat_map(|x| x.iter()).filter(|x| d.rare(x)).collect();
+            ws.sort();
+            ws.dedup();
+            let k = ws.len();
+            let mut v: Vec<f32> = (0..k).flat_map(|i| (1..=5).map(move |j| (i, (i + j * 53) % k))).filter(|(i, j)| i != j).map(|(i, j)| crate::words::Meaning::sim(n, ws[i], ws[j])).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            talk.word_at = v.get(((1.0 - CHANCE) * v.len() as f32) as usize).copied().unwrap_or(0.0);
+        }
         // the exchanges lived before
         if let Ok(s) = std::fs::read_to_string(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))) {
             for l in s.lines() {
@@ -360,11 +385,17 @@ impl<'a> Talk<'a> {
         // alike in meaning (the word network), each word weighed by how rare it is in conversation; without the
         // network, by shared runs and conversation meaning
         let alike = |a: &[String], b: &[String]| match &self.words {
-            Some(n) => n.alike(a, b, &|x| d.idf(x)),
+            Some(n) => crate::words::Meaning::alike(n, a, b, &|x| d.idf(x)),
             None => d.alike(a, b),
         };
-        let (s, (l, reply)) = self.lived.iter().map(|x| (alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
-        (s >= LIVED_AT).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2})", l.join(" ")), kind: "lived", recall: String::new(), ask: String::new() })
+        // every rare word of the lived line (what it was about: "car") must have its like in this one: the least
+        // matched decides, as in a measurement
+        let holds = |lived: &[String]| match &self.words {
+            Some(n) => lived.iter().filter(|x| d.rare(x)).all(|x| w.iter().any(|y| crate::words::Meaning::sim(n, x, y) >= self.word_at)),
+            None => true,
+        };
+        let (s, (l, reply)) = self.lived.iter().filter(|x| holds(&x.0)).map(|x| (alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
+        (s >= self.lived_at).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2}; chance pairs of lines reach {:.2}, of words {:.2})", l.join(" "), self.lived_at, self.word_at), kind: "lived", recall: String::new(), ask: String::new() })
     }
 
     /// what strangers' words may still say for Darma (as Raven for Prim): a social formula (a short line very like a
