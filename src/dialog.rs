@@ -253,7 +253,7 @@ impl Dialog {
         Some(Dialog { marks, act_after, turns, prev, openers, yes_no, ask_back, units, unit_prev, unit_runs, follow, follow_words, index, df, norm, recent: Vec::new(), scratch: Default::default(), meaning, resonance: RESONANCE, nearest_words: Default::default(), widen: true })
     }
 
-    fn idf(&self, r: &str) -> f32 {
+    pub fn idf(&self, r: &str) -> f32 {
         (self.units.len() as f32 / *self.df.get(r).unwrap_or(&1) as f32).ln()
     }
 

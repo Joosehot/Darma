@@ -176,6 +176,9 @@ pub struct Talk<'a> {
     /// exchanges): its own answers, not strangers'
     lived: Vec<(Vec<String>, String)>,
     lived_log: std::fs::File,
+    /// the word network imprinted (Primo's WordNet): what words mean, so a lived line is found in other words too
+    /// ("hi" for "hello")
+    words: Option<crate::words::Words>,
 }
 
 /// how alike a line must be to a lived one for Darma to answer as it learned (set by hand)
@@ -215,7 +218,7 @@ impl<'a> Talk<'a> {
             .map(|m| m.into_iter().filter(|x| x.1 >= 20).map(|x| x.0).collect())
             .unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(memory).expect("memory file");
-        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
+        let mut talk = Talk { core, copulas, log, remembered: 0, said: Vec::new(), df: HashMap::new(), by_word: HashMap::new(), recent: Vec::new(), pending: None, asked: Vec::new(), dialog: crate::dialog::Dialog::load("data/raw/dailydialog/train_marked.json"), last: None, me: crate::me::Me::new(at, &format!("{}_self.txt", memory.trim_end_matches(".txt")), fresh), own: crate::understand::strike_or_load(at).map(|x| x.0).zip(crate::compose::Composer::learn("data/raw/dailydialog/train_marked.json")), lived: Vec::new(), words: crate::words::Words::load(1), lived_log: std::fs::OpenOptions::new().create(true).append(true).open(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))).expect("lived file") };
         // the exchanges lived before
         if let Ok(s) = std::fs::read_to_string(format!("{}_lived.jsonl", memory.trim_end_matches(".txt"))) {
             for l in s.lines() {
@@ -354,7 +357,13 @@ impl<'a> Talk<'a> {
     /// an answer from what Darma lived: the lived line most alike to this one, if alike enough
     fn lived_reply(&self, w: &[String]) -> Option<Reply> {
         let d = self.dialog.as_ref()?;
-        let (s, (l, reply)) = self.lived.iter().map(|x| (d.alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
+        // alike in meaning (the word network), each word weighed by how rare it is in conversation; without the
+        // network, by shared runs and conversation meaning
+        let alike = |a: &[String], b: &[String]| match &self.words {
+            Some(n) => n.alike(a, b, &|x| d.idf(x)),
+            None => d.alike(a, b),
+        };
+        let (s, (l, reply)) = self.lived.iter().map(|x| (alike(w, &x.0), x)).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())?;
         (s >= LIVED_AT).then(|| Reply { said: reply.clone(), why: format!("you taught me this answer to \"{}\" ({s:.2})", l.join(" ")), kind: "lived", recall: String::new(), ask: String::new() })
     }
 
