@@ -15,6 +15,7 @@ mod qa;
 mod quantum;
 mod understand;
 mod vector;
+mod syntax;
 
 use clap::{Parser, Subcommand};
 
@@ -65,6 +66,11 @@ enum Cmd {
     },
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
+    /// grammar in waves, taught by UD: word classes and roles, measured on UD's test split
+    SyntaxEval {
+        #[arg(default_value_t = 2)]
+        strikes: usize,
+    },
     /// Darma's own answers (understanding, decision, a form filled) against people's real answers
     ComposeEval,
     /// the questions Darma's grammar makes of a verb and a noun
@@ -109,6 +115,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::SyntaxEval { strikes } => syntax::eval(cli.seed, strikes),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Ask2 { verb, noun } => {
             let g = grammar::Grammar::learn("data/ud_short.json").expect("run prepare-data first");
