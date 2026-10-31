@@ -16,6 +16,7 @@ mod quantum;
 mod understand;
 mod vector;
 mod syntax;
+mod speak;
 
 use clap::{Parser, Subcommand};
 
@@ -66,6 +67,11 @@ enum Cmd {
     },
     /// understanding: acts and emotions read from a line's state (DailyDialog's marks)
     UnderstandEval,
+    /// speech: grammar backwards (order from a tree, bending from base forms), measured on UD's test split
+    SpeakEval {
+        #[arg(default_value_t = 3)]
+        strikes: usize,
+    },
     /// grammar in waves, taught by UD: word classes and roles, measured on UD's test split
     SyntaxEval {
         #[arg(default_value_t = 2)]
@@ -115,6 +121,7 @@ fn main() {
         Cmd::QaSentences => qa::sentences(cli.dim, cli.seed),
         Cmd::QaSenses => qa::senses(cli.dim, cli.seed),
         Cmd::UnderstandEval => understand::eval(cli.dim, cli.seed),
+        Cmd::SpeakEval { strikes } => speak::eval(cli.seed, strikes),
         Cmd::SyntaxEval { strikes } => syntax::eval(cli.seed, strikes),
         Cmd::ComposeEval => compose::eval(cli.dim, cli.seed),
         Cmd::Ask2 { verb, noun } => {

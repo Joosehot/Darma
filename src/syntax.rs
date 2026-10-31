@@ -57,7 +57,7 @@ fn fnv(s: &str) -> u64 {
 }
 
 /// the same work on every core: items in chunks, results in order
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let n = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
     let size = items.len().div_ceil(n).max(1);
     std::thread::scope(|sc| {
